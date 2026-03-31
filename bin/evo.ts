@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, unlinkSync } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
 import yaml from 'js-yaml';
 import { loadConfig, type EvoConfig } from '../src/core/config.js';
@@ -525,6 +525,102 @@ program
       );
     }
     console.log('');
+  });
+
+// ── Pause Command ──────────────────────────────────────────────────────
+
+program
+  .command('pause')
+  .description('Pause the current evolution session')
+  .action(() => {
+    const evoDir = resolve('.evo');
+    const signalPath = join(evoDir, 'pause-signal');
+    writeFileSync(signalPath, new Date().toISOString(), 'utf-8');
+    console.log(yellow('Pause signal sent. Current experiment will finish, then session pauses.'));
+    console.log(dim('Run `evo resume` to continue.'));
+  });
+
+// ── Resume Command ─────────────────────────────────────────────────────
+
+program
+  .command('resume')
+  .description('Resume a paused evolution session')
+  .option('-n, --budget <n>', 'Remaining budget (default: resume with original)')
+  .action(async (opts) => {
+    const evoDir = resolve('.evo');
+    const sessionPath = join(evoDir, 'session-state.json');
+    const signalPath = join(evoDir, 'pause-signal');
+
+    // Clear pause signal
+    if (existsSync(signalPath)) {
+      unlinkSync(signalPath);
+    }
+
+    if (!existsSync(sessionPath)) {
+      console.log(yellow('No paused session found.'));
+      return;
+    }
+
+    try {
+      const session = JSON.parse(readFileSync(sessionPath, 'utf-8')) as {
+        status: string;
+        total_budget: number;
+        current_experiment: number;
+        options?: { artifactId?: string; safe?: boolean };
+      };
+
+      if (session.status !== 'paused') {
+        console.log(yellow(`Session is ${session.status}, not paused.`));
+        return;
+      }
+
+      const remaining = opts.budget
+        ? parseInt(opts.budget, 10)
+        : session.total_budget - session.current_experiment;
+
+      console.log(green(`Resuming session — ${remaining} experiments remaining`));
+
+      const config = loadConfig(resolveConfigPath({}));
+      const result = await evolve(config, {
+        budget: remaining,
+        artifactId: session.options?.artifactId,
+        safe: session.options?.safe,
+      });
+
+      console.log(bold('\nSession Complete'));
+      console.log(`  Experiments: ${result.experiments.length}`);
+      console.log(`  Successes: ${green(String(result.experiments.filter(e => e.status === 'success').length))}`);
+      console.log(`  Regressions: ${red(String(result.experiments.filter(e => e.status === 'regression').length))}`);
+    } catch (err) {
+      console.log(red(`Resume failed: ${String(err)}`));
+    }
+  });
+
+// ── Dashboard Command ──────────────────────────────────────────────────
+
+program
+  .command('dashboard')
+  .description('Open the ArtifactEvo web dashboard')
+  .option('-p, --port <port>', 'Port number', '4200')
+  .action(async (opts) => {
+    const { startDashboard } = await import('../src/dashboard/server.js');
+    let config: EvoConfig;
+    try {
+      config = loadConfig(resolveConfigPath({}));
+    } catch {
+      // Not initialized — start dashboard anyway with defaults
+      config = {
+        version: '1.0',
+        artifacts: {},
+        llm: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
+        evolution: { budget_per_session: 10, feedback_interval: 3, outer_interval: 10, plateau_window: 5 },
+        automation: { hook_mode: false, daemon_mode: false, trigger_after: 1, cooldown_minutes: 10, auto_commit: true, auto_push: false, max_regressions_before_pause: 3 },
+        dashboard: { port: 4200, open_browser: true },
+        meta_strategy_path: '.evo/meta-strategy.md',
+      };
+    }
+    const port = parseInt(opts.port, 10);
+    await startDashboard(port, resolve('.evo'), config.dashboard.open_browser);
   });
 
 // ── Parse ───────────────────────────────────────────────────────────────

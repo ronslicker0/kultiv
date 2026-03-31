@@ -1,5 +1,8 @@
 import type { LLMConfig } from '../core/config.js';
 import { AnthropicProvider } from './anthropic.js';
+import { OpenAIProvider } from './openai.js';
+import { OllamaProvider } from './ollama.js';
+import { ClaudeCodeProvider } from './claude-code.js';
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -31,13 +34,23 @@ export interface LLMProvider {
 export function createProvider(config: LLMConfig): LLMProvider {
   switch (config.provider) {
     case 'anthropic':
-      return new AnthropicProvider(config.model, config.auth_env);
+      return new AnthropicProvider(
+        config.model,
+        config.oauth_token_env ?? config.auth_env
+      );
 
     case 'openai':
-      throw new Error('OpenAI provider not yet implemented');
+      return new OpenAIProvider(
+        config.model,
+        config.auth_env,
+        config.oauth_token_env
+      );
+
+    case 'ollama':
+      return new OllamaProvider(config.model, config.base_url);
 
     case 'claude-code':
-      throw new Error('Claude Code provider not yet implemented');
+      return new ClaudeCodeProvider(config.model);
 
     default:
       throw new Error(`Unknown LLM provider: ${config.provider as string}`);

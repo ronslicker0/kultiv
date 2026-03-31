@@ -8,6 +8,16 @@ import type { LLMProvider } from '../llm/provider.js';
 import { proposeMutation, type MutationContext } from '../mutation/single-call.js';
 import { applyMutation, revertMutation, cleanupBackup } from '../mutation/apply.js';
 import { runChain, type Scorecard } from '../scoring/chain-runner.js';
+import {
+  isGitRepo,
+  isWorkingTreeClean,
+  createExperimentBranch,
+  commitExperiment,
+  mergeExperiment,
+  abandonExperiment,
+  returnToBaseBranch,
+  type GitSafetyContext,
+} from '../safety/git.js';
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -128,12 +138,34 @@ export async function innerLoop(
     };
   }
 
+  // 7b. Git safety — create experiment branch if enabled
+  const useGitSafety = options?.safe && isGitRepo(projectRoot);
+  let gitCtx: GitSafetyContext | null = null;
+
+  if (useGitSafety) {
+    if (!isWorkingTreeClean(projectRoot)) {
+      return makeCrashResult(
+        genid,
+        artifactId,
+        archive,
+        new Error('Git working tree is not clean. Commit or stash changes before running in safe mode.'),
+      );
+    }
+    gitCtx = { projectRoot, genid };
+    try {
+      createExperimentBranch(gitCtx);
+    } catch (err) {
+      return makeCrashResult(genid, artifactId, archive, err);
+    }
+  }
+
   // 8. Apply mutation
   let backupPath: string;
   try {
     const result = applyMutation(artifact.path, updatedContent);
     backupPath = result.backupPath;
   } catch (err) {
+    if (gitCtx) abandonExperiment(gitCtx);
     return makeCrashResult(genid, artifactId, archive, err);
   }
 
@@ -146,6 +178,7 @@ export async function innerLoop(
     try {
       revertMutation(artifact.path, backupPath);
     } catch { /* best effort */ }
+    if (gitCtx) abandonExperiment(gitCtx);
     return makeCrashResult(genid, artifactId, archive, err);
   }
 
@@ -158,9 +191,21 @@ export async function innerLoop(
   if (newScore > baselineScore) {
     status = 'success';
     cleanupBackup(backupPath);
+    // Git safety: commit successful mutation and merge back
+    if (gitCtx) {
+      try {
+        commitExperiment(gitCtx, `evo: gen ${genid} ${mutationType} score ${newScore}/${maxScore}`);
+        mergeExperiment(gitCtx);
+      } catch {
+        // Merge failed — leave branch for manual resolution
+        returnToBaseBranch(projectRoot);
+      }
+    }
   } else if (newScore < baselineScore) {
     status = 'regression';
     revertMutation(artifact.path, backupPath);
+    // Git safety: abandon the experiment branch (discards changes)
+    if (gitCtx) abandonExperiment(gitCtx);
   } else {
     // Equal score — keep the mutation (neutral/lateral move)
     status = 'neutral';
@@ -170,6 +215,12 @@ export async function innerLoop(
   // In safe mode, revert neutral mutations too
   if (options?.safe && status === 'neutral') {
     revertMutation(artifact.path, backupPath);
+    if (gitCtx) abandonExperiment(gitCtx);
+  }
+
+  // Git safety: always ensure we return to base branch
+  if (useGitSafety) {
+    returnToBaseBranch(projectRoot);
   }
 
   // 11. Log to archive

@@ -14,9 +14,12 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
+    "@hono/node-server": "^1.19.12",
     "commander": "^12.1.0",
     "diff": "^7.0.0",
+    "hono": "^4.12.9",
     "js-yaml": "^4.1.0",
+    "openai": "^6.33.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {

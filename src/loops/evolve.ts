@@ -1,4 +1,5 @@
-import { resolve } from 'node:path';
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
+import { resolve, join } from 'node:path';
 import type { EvoConfig } from '../core/config.js';
 import { Archive, type ArchiveEntry } from '../core/archive.js';
 import { createProvider } from '../llm/factory.js';
@@ -32,6 +33,89 @@ export interface EvolveResult {
   summary: string;
 }
 
+// ── Session State (pause/resume) ────────────────────────────────────────
+
+export interface SessionState {
+  session_id: string;
+  started_at: string;
+  paused_at: string | null;
+  status: 'running' | 'paused' | 'completed';
+  current_experiment: number;
+  total_budget: number;
+  artifact_queue: string[];
+  results_so_far: number[];
+  options: EvolveOptions;
+}
+
+const SESSION_STATE_FILE = 'session-state.json';
+const PAUSE_SIGNAL_FILE = 'pause-signal';
+
+function sessionStatePath(evoDir: string): string {
+  return join(evoDir, SESSION_STATE_FILE);
+}
+
+function pauseSignalPath(evoDir: string): string {
+  return join(evoDir, PAUSE_SIGNAL_FILE);
+}
+
+function generateSessionId(): string {
+  return `evo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function hasPauseSignal(evoDir: string): boolean {
+  return existsSync(pauseSignalPath(evoDir));
+}
+
+function consumePauseSignal(evoDir: string): void {
+  const path = pauseSignalPath(evoDir);
+  if (existsSync(path)) {
+    unlinkSync(path);
+  }
+}
+
+function saveSessionState(evoDir: string, state: SessionState): void {
+  if (!existsSync(evoDir)) {
+    mkdirSync(evoDir, { recursive: true });
+  }
+  writeFileSync(sessionStatePath(evoDir), JSON.stringify(state, null, 2), 'utf-8');
+}
+
+/**
+ * Create a pause signal file. The evolve loop checks for this at the start
+ * of each iteration and gracefully pauses.
+ */
+export function pauseEvolution(evoDir: string): boolean {
+  if (!existsSync(evoDir)) {
+    return false;
+  }
+  writeFileSync(pauseSignalPath(evoDir), new Date().toISOString(), 'utf-8');
+  return true;
+}
+
+/**
+ * Read the current session state, or null if no session exists.
+ */
+export function getSessionState(evoDir: string): SessionState | null {
+  const path = sessionStatePath(evoDir);
+  if (!existsSync(path)) return null;
+
+  try {
+    const raw = readFileSync(path, 'utf-8');
+    return JSON.parse(raw) as SessionState;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Clear the session state file and any pause signal.
+ */
+export function clearSession(evoDir: string): void {
+  const statePath = sessionStatePath(evoDir);
+  if (existsSync(statePath)) unlinkSync(statePath);
+  consumePauseSignal(evoDir);
+}
+
 // ── Evolve Orchestrator ─────────────────────────────────────────────────
 
 /**
@@ -52,7 +136,7 @@ export async function evolve(
   config: EvoConfig,
   options?: EvolveOptions,
 ): Promise<EvolveResult> {
-  const budget = options?.budget ?? config.evolution.budget_per_session;
+  const evoDir = resolve('.evo');
   const feedbackInterval = config.evolution.feedback_interval;
   const outerInterval = config.evolution.outer_interval;
   const plateauWindow = config.evolution.plateau_window;
@@ -66,33 +150,108 @@ export async function evolve(
 
   // 2. Get artifact IDs
   const allArtifactIds = Object.keys(config.artifacts);
-  const artifactIds = options?.artifactId
-    ? [options.artifactId]
-    : allArtifactIds;
 
-  if (artifactIds.length === 0) {
-    throw new Error('No artifacts configured. Use `evo add <name> <path>` to register artifacts.');
-  }
-
-  if (options?.artifactId && !config.artifacts[options.artifactId]) {
-    throw new Error(
-      `Artifact "${options.artifactId}" not found in config. Available: ${allArtifactIds.join(', ')}`
-    );
-  }
-
-  console.log(bold('\nArtifactEvo \u2014 Starting evolution session'));
-  console.log(dim(`  Budget: ${budget} experiments`));
-  console.log(dim(`  Artifacts: ${artifactIds.join(', ')}`));
-  console.log(dim(`  Mode: ${options?.dryRun ? 'dry-run' : options?.safe ? 'safe' : 'normal'}`));
-  console.log('');
-
-  // 3. Evolution loop
-  const experiments: InnerLoopResult[] = [];
+  // Check for a paused session to resume
+  const existingSession = getSessionState(evoDir);
+  let startIndex = 0;
+  let budget: number;
+  let artifactIds: string[];
+  let sessionId: string;
+  let experiments: InnerLoopResult[] = [];
   let outerLoopRan = false;
   let totalTokenCost = 0;
+
+  if (existingSession && existingSession.status === 'paused') {
+    // Resume from paused session
+    budget = existingSession.total_budget;
+    startIndex = existingSession.current_experiment;
+    artifactIds = existingSession.artifact_queue;
+    sessionId = existingSession.session_id;
+
+    console.log(bold('\nArtifactEvo \u2014 Resuming paused session'));
+    console.log(dim(`  Session: ${sessionId}`));
+    console.log(dim(`  Resuming from experiment ${startIndex + 1}/${budget}`));
+    console.log(dim(`  Artifacts: ${artifactIds.join(', ')}`));
+    console.log('');
+  } else {
+    // Fresh session
+    budget = options?.budget ?? config.evolution.budget_per_session;
+    artifactIds = options?.artifactId
+      ? [options.artifactId]
+      : allArtifactIds;
+    sessionId = generateSessionId();
+
+    if (artifactIds.length === 0) {
+      throw new Error('No artifacts configured. Use `evo add <name> <path>` to register artifacts.');
+    }
+
+    if (options?.artifactId && !config.artifacts[options.artifactId]) {
+      throw new Error(
+        `Artifact "${options.artifactId}" not found in config. Available: ${allArtifactIds.join(', ')}`
+      );
+    }
+
+    // Clear any stale session data
+    clearSession(evoDir);
+
+    console.log(bold('\nArtifactEvo \u2014 Starting evolution session'));
+    console.log(dim(`  Session: ${sessionId}`));
+    console.log(dim(`  Budget: ${budget} experiments`));
+    console.log(dim(`  Artifacts: ${artifactIds.join(', ')}`));
+    console.log(dim(`  Mode: ${options?.dryRun ? 'dry-run' : options?.safe ? 'safe' : 'normal'}`));
+    console.log('');
+  }
+
+  // Save initial session state
+  const effectiveOptions = options ?? {};
+  saveSessionState(evoDir, {
+    session_id: sessionId,
+    started_at: existingSession?.started_at ?? new Date().toISOString(),
+    paused_at: null,
+    status: 'running',
+    current_experiment: startIndex,
+    total_budget: budget,
+    artifact_queue: artifactIds,
+    results_so_far: existingSession?.results_so_far ?? [],
+    options: effectiveOptions,
+  });
+
+  // 3. Evolution loop
   let consecutiveRegressions = 0;
 
-  for (let i = 0; i < budget; i++) {
+  for (let i = startIndex; i < budget; i++) {
+    // Check for pause signal before each iteration
+    if (hasPauseSignal(evoDir)) {
+      consumePauseSignal(evoDir);
+      console.log(yellow(bold('\n  PAUSED: Pause signal received. Saving session state.')));
+
+      saveSessionState(evoDir, {
+        session_id: sessionId,
+        started_at: existingSession?.started_at ?? new Date().toISOString(),
+        paused_at: new Date().toISOString(),
+        status: 'paused',
+        current_experiment: i,
+        total_budget: budget,
+        artifact_queue: artifactIds,
+        results_so_far: [
+          ...(existingSession?.results_so_far ?? []),
+          ...experiments.map((e) => e.genid),
+        ],
+        options: effectiveOptions,
+      });
+
+      const summary = buildSummary(experiments, outerLoopRan, totalTokenCost);
+      console.log(summary);
+      console.log(dim('  Resume with: evo resume'));
+
+      return {
+        experiments,
+        outerLoopRan,
+        totalTokenCost,
+        summary,
+      };
+    }
+
     const artifactId = artifactIds[i % artifactIds.length];
 
     console.log(dim(`[${i + 1}/${budget}] `) + `Evolving ${bold(artifactId)}...`);
@@ -112,6 +271,22 @@ export async function evolve(
     } else {
       consecutiveRegressions = 0;
     }
+
+    // Persist session state after each experiment (crash-safe)
+    saveSessionState(evoDir, {
+      session_id: sessionId,
+      started_at: existingSession?.started_at ?? new Date().toISOString(),
+      paused_at: null,
+      status: 'running',
+      current_experiment: i + 1,
+      total_budget: budget,
+      artifact_queue: artifactIds,
+      results_so_far: [
+        ...(existingSession?.results_so_far ?? []),
+        ...experiments.map((e) => e.genid),
+      ],
+      options: effectiveOptions,
+    });
 
     if (consecutiveRegressions >= config.automation.max_regressions_before_pause) {
       console.log(red(bold(`\n  PAUSED: ${consecutiveRegressions} consecutive regressions. Stopping.`)));
@@ -167,7 +342,23 @@ export async function evolve(
     }
   }
 
-  // 4. Print summary
+  // 4. Mark session as completed
+  saveSessionState(evoDir, {
+    session_id: sessionId,
+    started_at: existingSession?.started_at ?? new Date().toISOString(),
+    paused_at: null,
+    status: 'completed',
+    current_experiment: budget,
+    total_budget: budget,
+    artifact_queue: artifactIds,
+    results_so_far: [
+      ...(existingSession?.results_so_far ?? []),
+      ...experiments.map((e) => e.genid),
+    ],
+    options: effectiveOptions,
+  });
+
+  // 5. Print summary
   const summary = buildSummary(experiments, outerLoopRan, totalTokenCost);
   console.log(summary);
 
