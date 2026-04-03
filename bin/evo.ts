@@ -178,7 +178,22 @@ program
 
       try {
         const artifact = loadArtifact(id, artifactConfig);
-        const scorecard = await runChain(artifactConfig.scorer.chain, resolve('.'));
+
+        // Create LLM provider if chain has llm-judge evaluators
+        const hasLLMJudge = artifactConfig.scorer.chain.some(
+          (item) => item.type === 'llm-judge'
+        );
+        const chainOptions: { provider?: ReturnType<typeof createProvider>; artifactContent?: string } = {};
+        if (hasLLMJudge) {
+          try {
+            chainOptions.provider = createProvider(config.llm);
+            chainOptions.artifactContent = artifact.content;
+          } catch (err) {
+            console.log(dim(`  ⚠ LLM provider unavailable: ${String(err).slice(0, 80)}`));
+          }
+        }
+
+        const scorecard = await runChain(artifactConfig.scorer.chain, resolve('.'), chainOptions);
 
         const entry: ArchiveEntry = {
           genid: archive.getNextGenId(),

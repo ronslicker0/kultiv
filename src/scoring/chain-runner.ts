@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { ScorerChainItem } from '../core/config.js';
 import type { LLMProvider } from '../llm/provider.js';
 import { runCommandScorer } from './command-scorer.js';
@@ -129,13 +131,23 @@ export async function runChain(
           passed: false,
         };
       } else {
+        // Read rubric from file if rules_file is a path, otherwise use as-is
+        let rubricText = item.rules_file;
+        if (rubricText) {
+          try {
+            const rubricPath = resolve(projectRoot, rubricText);
+            rubricText = readFileSync(rubricPath, 'utf-8');
+          } catch {
+            // If file read fails, use the raw string as rubric text
+          }
+        }
         result = await runLLMJudge(
           item.name,
           options.artifactContent,
           item.weight,
           {
             provider: options.provider,
-            rubric: item.rules_file, // Reuse rules_file as rubric path/text
+            rubric: rubricText,
           },
         );
       }
