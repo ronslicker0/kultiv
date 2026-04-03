@@ -85,6 +85,19 @@ pre{background:var(--surface2);border-radius:6px;padding:12px;overflow-x:auto;fo
 .settings-warning{background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.3);border-radius:6px;padding:12px;font-size:12px;color:var(--yellow);margin-bottom:16px}
 .toggle-row{display:flex;align-items:center;gap:10px;margin-bottom:10px}
 .toggle-row input[type="checkbox"]{width:18px;height:18px;accent-color:var(--blue)}
+textarea.pg-input{font-family:'Consolas','Monaco','Courier New',monospace;font-size:13px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:12px;resize:vertical;width:100%;line-height:1.6;tab-size:2}
+.pg-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:900px){.pg-grid{grid-template-columns:1fr}}
+.pg-controls{display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin:12px 0}
+.pg-controls label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--text2)}
+.sc-row{display:flex;align-items:center;gap:12px;padding:10px 12px;border-bottom:1px solid var(--border)}
+.sc-row .sc-name{flex:1;font-weight:500}
+.sc-row .sc-score{font-family:monospace;min-width:60px;text-align:right}
+.sc-total{font-weight:700;font-size:18px;padding:14px;background:var(--surface2);border-radius:6px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center}
+.sc-checks{padding:2px 12px 8px;font-size:12px;color:var(--text2)}
+.sc-reasoning{padding:4px 12px 8px;font-size:13px;color:var(--text2);font-style:italic}
+.btn-green{background:var(--green)!important}
+.save-section{border-top:1px solid var(--border);padding-top:12px;margin-top:16px}
 </style>
 </head>
 <body>
@@ -603,11 +616,131 @@ function Settings(){
   </div>\`;
 }
 
+// ── Playground Tab ───────────────────────────────────────────────────
+function Playground(){
+  const[content,setContent]=useState('');
+  const[type,setType]=useState('prompt');
+  const[chainMode,setChainMode]=useState('default');
+  const[chainArtifactId,setChainArtifactId]=useState('');
+  const[chains,setChains]=useState([]);
+  const[scoring,setScoring]=useState(false);
+  const[scorecard,setSc]=useState(null);
+  const[error,setError]=useState('');
+  const[saveName,setSaveName]=useState('');
+  const[savePath,setSavePath]=useState('');
+  const[saving,setSaving]=useState(false);
+  const[saveMsg,setSaveMsg]=useState('');
+
+  useEffect(()=>{api('playground/chains').then(r=>{if(!r.error){setChains(r);if(r.length>0)setChainArtifactId(r[0].id)}});},[]);
+
+  const doScore=async()=>{
+    setScoring(true);setSc(null);setError('');
+    const chain=chainMode==='default'?'default':chainArtifactId;
+    const r=await post('playground/score',{content,type,chain});
+    if(r.error)setError(r.error);else setSc(r);
+    setScoring(false);
+  };
+
+  const doSave=async()=>{
+    if(!saveName||!savePath){setSaveMsg('Name and path are required');return}
+    setSaving(true);setSaveMsg('');
+    const r=await post('playground/save',{content,name:saveName,type,path:savePath});
+    setSaveMsg(r.error||'Saved as "'+saveName+'"');
+    setSaving(false);
+    if(!r.error)api('playground/chains').then(r2=>{if(!r2.error)setChains(r2)});
+  };
+
+  return html\`<div>
+    <h2 style="margin-bottom:16px">Playground</h2>
+    <div class="pg-grid">
+      <div>
+        <div class="card">
+          <h3 style="margin-bottom:8px">Input</h3>
+          <textarea class="pg-input" rows="18" placeholder="Paste your prompt, code, or config here..."
+            value=\${content} onInput=\${e=>setContent(e.target.value)}></textarea>
+          <div class="pg-controls">
+            <label>Type
+              <select value=\${type} onChange=\${e=>setType(e.target.value)}>
+                <option value="prompt">Prompt</option>
+                <option value="config">Config</option>
+                <option value="template">Template</option>
+                <option value="doc">Doc</option>
+              </select>
+            </label>
+            <label>Score with
+              <select value=\${chainMode==='default'?'default':chainArtifactId} onChange=\${e=>{
+                if(e.target.value==='default'){setChainMode('default')}
+                else{setChainMode('artifact');setChainArtifactId(e.target.value)}
+              }}>
+                <option value="default">Default (LLM Judge)</option>
+                \${chains.map(ch=>html\`<option value=\${ch.id}>\${ch.id} (\${ch.chain_summary})</option>\`)}
+              </select>
+            </label>
+            <div style="flex:1"></div>
+            <button onclick=\${doScore} disabled=\${scoring||!content.trim()}
+              style="padding:10px 24px;font-size:15px">
+              \${scoring?'Scoring...':'Score It'}
+            </button>
+          </div>
+        </div>
+      </div>
+      <div>
+        \${scorecard?html\`<div class="card">
+          <h3 style="margin-bottom:8px">Results</h3>
+          <div class="sc-total">
+            <span>Score: \${scorecard.total_score} / \${scorecard.max_score}</span>
+            <span style="color:\${scorecard.percentage>=80?'var(--green)':scorecard.percentage>=60?'var(--yellow)':'var(--red)'}">
+              \${scorecard.percentage}%
+            </span>
+          </div>
+          <div>
+            \${(scorecard.evaluators||[]).map(ev=>html\`<div>
+              <div class="sc-row">
+                <span class="sc-name">\${ev.name}</span>
+                <span class="badge \${ev.passed?'success':'regression'}">\${ev.passed?'PASS':'FAIL'}</span>
+                <span class="sc-score">\${Math.round(ev.score*100)/100}/\${ev.max}</span>
+              </div>
+              \${ev.details?.reasoning?html\`<div class="sc-reasoning">\${ev.details.reasoning}</div>\`:null}
+              \${ev.details?.checks?html\`<div class="sc-checks">
+                \${ev.details.checks.map(ck=>html\`<div style="margin:2px 0">
+                  <span style="color:\${ck.passed?'var(--green)':'var(--red)'}">\${ck.passed?'✓':'✗'}</span>
+                  \${' '}\${ck.name}\${ck.note?': '+ck.note:''}
+                </div>\`)}
+              </div>\`:null}
+            </div>\`)}
+          </div>
+          <div class="save-section">
+            <h4 style="margin-bottom:8px">Save as Artifact</h4>
+            <div class="pg-controls">
+              <label>Name
+                <input placeholder="my-prompt" value=\${saveName} onInput=\${e=>setSaveName(e.target.value)}/>
+              </label>
+              <label>File Path
+                <input placeholder="agents/my-prompt.md" value=\${savePath} onInput=\${e=>setSavePath(e.target.value)}/>
+              </label>
+              <button class="btn-green" onclick=\${doSave} disabled=\${saving}>
+                \${saving?'Saving...':'Save'}
+              </button>
+            </div>
+            \${saveMsg?html\`<div style="margin-top:6px;font-size:13px;color:var(--text2)">\${saveMsg}</div>\`:null}
+          </div>
+        </div>\`:null}
+        \${error?html\`<div class="card" style="border-color:var(--red)">
+          <div style="color:var(--red)">\${error}</div>
+        </div>\`:null}
+        \${!scorecard&&!error?html\`<div class="card" style="display:flex;align-items:center;justify-content:center;min-height:200px;color:var(--text2)">
+          Paste content and click "Score It" to see results
+        </div>\`:null}
+      </div>
+    </div>
+  </div>\`;
+}
+
 // ── App ──────────────────────────────────────────────────────────────
 function App(){
   const[tab,setTab]=useState('overview');
-  const tabs=[['overview','Overview'],['artifacts','Artifacts'],['evolution','Evolution'],['traces','Traces'],['settings','Settings']];
-  const content={overview:Overview,artifacts:Artifacts,evolution:Evolution,traces:Traces,settings:Settings};
+  const tabs=[['overview','Overview'],['artifacts','Artifacts'],['evolution','Evolution'],['playground','Playground'],['traces','Traces'],['settings','Settings']];
+  const content={overview:Overview,artifacts:Artifacts,evolution:Evolution,playground:Playground,traces:Traces,settings:Settings};
   const Tab=content[tab];
 
   return html\`

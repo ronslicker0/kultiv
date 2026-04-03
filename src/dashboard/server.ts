@@ -5,7 +5,9 @@
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 import { readFileSync, existsSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 
 import { Archive } from '../core/archive.js';
 import { loadConfig, type EvoConfig } from '../core/config.js';
@@ -297,6 +299,115 @@ export async function startDashboard(
       }
 
       return c.json(config);
+    } catch (err) {
+      return c.json({ error: String(err) }, 500);
+    }
+  });
+
+  // ── API: Playground ──────────────────────────────────────────────────
+
+  // List available scorer chains for the dropdown
+  app.get('/api/playground/chains', (c) => {
+    const configPath = join(absEvoDir, 'config.yaml');
+    if (!existsSync(configPath)) return c.json([]);
+
+    try {
+      const config = loadConfig(configPath);
+      const chains = Object.entries(config.artifacts).map(([id, art]) => ({
+        id,
+        type: art.type,
+        chain_summary: art.scorer.chain.map((ch) => ch.name).join(', '),
+      }));
+      return c.json(chains);
+    } catch {
+      return c.json([]);
+    }
+  });
+
+  // Score arbitrary content against a scorer chain
+  app.post('/api/playground/score', async (c) => {
+    const body = await c.req.json<{ content: string; type: string; chain: string }>();
+    if (!body.content) return c.json({ error: 'content is required' }, 400);
+
+    const configPath = join(absEvoDir, 'config.yaml');
+    if (!existsSync(configPath)) return c.json({ error: 'Not initialized' }, 404);
+
+    const projectRoot = resolve(absEvoDir, '..');
+
+    // Write content to a temp file for pattern/script scorers
+    const tempFile = join(tmpdir(), `evo-playground-${randomUUID()}.txt`);
+    writeFileSync(tempFile, body.content, 'utf-8');
+
+    try {
+      const config = loadConfig(configPath);
+      const { runChain } = await import('../scoring/chain-runner.js');
+      const { createProvider } = await import('../llm/factory.js');
+
+      // Build scorer chain
+      let chain;
+      if (body.chain === 'default') {
+        chain = [{ name: 'llm-judge', type: 'llm-judge' as const, weight: 100 }];
+      } else {
+        const art = config.artifacts[body.chain];
+        if (!art) return c.json({ error: `Artifact "${body.chain}" not found` }, 404);
+        chain = art.scorer.chain;
+      }
+
+      // Create LLM provider if needed
+      let provider;
+      try {
+        provider = createProvider(config.llm);
+      } catch {
+        // LLM not available — script/pattern scorers still work
+      }
+
+      const scorecard = await runChain(chain, projectRoot, {
+        provider,
+        artifactContent: body.content,
+        artifactPath: tempFile,
+      });
+
+      return c.json(scorecard);
+    } catch (err) {
+      return c.json({ error: String(err) }, 500);
+    } finally {
+      try { unlinkSync(tempFile); } catch { /* best effort */ }
+    }
+  });
+
+  // Save playground content as a new artifact
+  app.post('/api/playground/save', async (c) => {
+    const body = await c.req.json<{ content: string; name: string; type: string; path: string }>();
+    if (!body.content || !body.name || !body.path) {
+      return c.json({ error: 'content, name, and path are required' }, 400);
+    }
+
+    const configPath = join(absEvoDir, 'config.yaml');
+    if (!existsSync(configPath)) return c.json({ error: 'Not initialized' }, 404);
+
+    const projectRoot = resolve(absEvoDir, '..');
+    const filePath = resolve(projectRoot, body.path);
+
+    try {
+      // Write the content file
+      mkdirSync(dirname(filePath), { recursive: true });
+      writeFileSync(filePath, body.content, 'utf-8');
+
+      // Register in config
+      const yaml = await import('js-yaml');
+      const raw = readFileSync(configPath, 'utf-8');
+      const config = yaml.default.load(raw) as Record<string, unknown>;
+      const artifacts = (config.artifacts ?? {}) as Record<string, unknown>;
+
+      artifacts[body.name] = {
+        path: body.path,
+        type: body.type ?? 'prompt',
+        scorer: { chain: [{ name: 'llm-judge', type: 'llm-judge', weight: 100 }] },
+      };
+      config.artifacts = artifacts;
+
+      writeFileSync(configPath, yaml.default.dump(config, { lineWidth: 120 }), 'utf-8');
+      return c.json({ success: true, artifact: body.name });
     } catch (err) {
       return c.json({ error: String(err) }, 500);
     }
