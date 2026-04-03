@@ -86,9 +86,14 @@ export async function innerLoop(
     : null;
 
   // 4. Run scoring chain for baseline
+  const chainOptions = {
+    provider,
+    artifactContent: artifact.content,
+    artifactPath: artifact.path,
+  };
   let baselineScorecard: Scorecard;
   try {
-    baselineScorecard = await runChain(artifactConfig.scorer.chain, projectRoot);
+    baselineScorecard = await runChain(artifactConfig.scorer.chain, projectRoot, chainOptions);
   } catch (err) {
     return makeCrashResult(genid, artifactId, archive, err);
   }
@@ -172,7 +177,12 @@ export async function innerLoop(
   // 9. Score the mutated artifact
   let newScorecard: Scorecard;
   try {
-    newScorecard = await runChain(artifactConfig.scorer.chain, projectRoot);
+    const mutatedOptions = {
+      provider,
+      artifactContent: updatedContent,
+      artifactPath: artifact.path,
+    };
+    newScorecard = await runChain(artifactConfig.scorer.chain, projectRoot, mutatedOptions);
   } catch (err) {
     // Scoring failed — revert and report crash
     try {

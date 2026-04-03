@@ -183,11 +183,13 @@ program
         const hasLLMJudge = artifactConfig.scorer.chain.some(
           (item) => item.type === 'llm-judge'
         );
-        const chainOptions: { provider?: ReturnType<typeof createProvider>; artifactContent?: string } = {};
+        const chainOptions: { provider?: ReturnType<typeof createProvider>; artifactContent?: string; artifactPath?: string } = {
+          artifactPath: artifact.path,
+          artifactContent: artifact.content,
+        };
         if (hasLLMJudge) {
           try {
             chainOptions.provider = createProvider(config.llm);
-            chainOptions.artifactContent = artifact.content;
           } catch (err) {
             console.log(dim(`  ⚠ LLM provider unavailable: ${String(err).slice(0, 80)}`));
           }

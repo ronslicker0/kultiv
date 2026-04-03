@@ -30,6 +30,8 @@ export interface ChainRunOptions {
   provider?: LLMProvider;
   /** The artifact content as a string. Required for llm-judge evaluators. */
   artifactContent?: string;
+  /** Absolute path to the artifact file. Used by pattern scorer when no command override. */
+  artifactPath?: string;
 }
 
 // ── Chain Runner ─────────────────────────────────────────────────────────
@@ -95,21 +97,15 @@ export async function runChain(
           passed: false,
         };
       } else {
-        const artifactPath = options?.artifactContent
-          ? '' // Will use content if we refactor later; for now rules_file scorer reads from disk
-          : '';
-        // Pattern scorer reads the artifact file directly. The path should come
-        // from the chain item or the artifact config. For now we use the command
-        // field as a path override, or fall back to projectRoot-relative rules_file.
-        const filePath = item.command ?? `${projectRoot}`;
+        // Pattern scorer reads the artifact file directly. Use command field
+        // as explicit override, then artifact path from options, then project root.
+        const patternFilePath = item.command ?? options?.artifactPath ?? `${projectRoot}`;
         result = runPatternScorer(
           item.name,
-          filePath,
+          patternFilePath,
           item.rules_file,
           item.weight,
         );
-        // Suppress unused variable
-        void artifactPath;
       }
     } else if (effectiveType === 'llm-judge') {
       if (!options?.provider) {
