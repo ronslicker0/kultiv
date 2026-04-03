@@ -176,7 +176,7 @@ export async function runChain(
     : 0;
 
   return {
-    total_score: weightedScoreSum,
+    total_score: Math.round(weightedScoreSum * 100) / 100,
     max_score: weightedMaxSum,
     percentage,
     evaluators,

@@ -132,7 +132,8 @@ function LineChart({series,width=600,height=200}){
       <text x=\${pad.l-8} y=\${y+4} text-anchor="end" fill="var(--text2)" font-size="11">\${Math.round(val)}</text>\`);
   }
 
-  return html\`<svg viewBox="0 0 \${width} \${height}" width="100%" style="max-width:\${width}px">
+  return html\`<div>
+    <svg viewBox="0 0 \${width} \${height}" width="100%" style="max-width:\${width}px">
     \${grids}
     \${series.map((s,si)=>{
       const pts=s.data.map((p,i)=>\`\${toX(i,s.data.length)},\${toY(p.y)}\`).join(' ');
@@ -141,13 +142,14 @@ function LineChart({series,width=600,height=200}){
         \${s.data.map((p,i)=>html\`<circle cx=\${toX(i,s.data.length)} cy=\${toY(p.y)} r="3" fill=\${colors[si%colors.length]}><title>\${s.name}: \${p.y}</title></circle>\`)}
       </\${Fragment}>\`;
     })}
-    \${series.length>1?html\`<g transform="translate(\${pad.l},\${height-8})">
-      \${series.map((s,i)=>html\`<g transform="translate(\${i*100},0)">
-        <rect width="12" height="3" fill=\${colors[i%colors.length]} rx="1"/>
-        <text x="16" y="4" fill="var(--text2)" font-size="11">\${s.name}</text>
-      </g>\`)}
-    </g>\`:null}
-  </svg>\`;
+  </svg>
+    \${series.length>1?html\`<div style="display:flex;flex-wrap:wrap;gap:8px 16px;padding:8px 0 0 \${pad.l}px;font-size:12px">
+      \${series.map((s,i)=>html\`<span style="display:flex;align-items:center;gap:4px;white-space:nowrap">
+        <span style="width:12px;height:3px;border-radius:1px;background:\${colors[i%colors.length]};flex-shrink:0"></span>
+        <span style="color:var(--text2)">\${s.name}</span>
+      </span>\`)}
+    </div>\`:null}
+  </div>\`;
 }
 
 // ── Overview Tab ─────────────────────────────────────────────────────
