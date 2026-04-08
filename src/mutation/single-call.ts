@@ -31,8 +31,8 @@ export async function proposeMutation(
   const systemPreamble =
     'You are a Kultiv evolution engine. Analyze the artifact, scorecard, and history, ' +
     'then propose exactly ONE mutation following the meta-strategy. ' +
-    'Respond with valid JSON matching the MutationOutput schema. ' +
-    'Include the FULL updated artifact content in the "updated_artifact" field.';
+    'Respond with a JSON code block containing mutation metadata, then the full updated artifact after an ===UPDATED_ARTIFACT=== delimiter. ' +
+    'CRITICAL: The "mutation_type" MUST be one of: ADD_RULE, ADD_EXAMPLE, ADD_NEGATIVE_EXAMPLE, REORDER, SIMPLIFY, REPHRASE, DELETE_RULE, MERGE_RULES, RESTRUCTURE. No other values.';
 
   const response = await provider.generate([
     { role: 'user', content: `${systemPreamble}\n\n${prompt}` },
@@ -88,7 +88,9 @@ ${historyBlock}
 Analyze the artifact and scorecard. Propose ONE mutation that will improve the score.
 Follow the meta-strategy's priority order and diversity rules.
 
-Respond with this exact JSON structure:
+Use this EXACT format — a JSON block followed by the full updated artifact after a separator:
+
+\`\`\`json
 {
   "diagnosis": "brief analysis of current weaknesses",
   "mutation_type": "ADD_RULE|ADD_EXAMPLE|ADD_NEGATIVE_EXAMPLE|REORDER|SIMPLIFY|REPHRASE|DELETE_RULE|MERGE_RULES|RESTRUCTURE",
@@ -96,16 +98,57 @@ Respond with this exact JSON structure:
   "action": "add|remove|replace|move",
   "content": "the specific content being added/modified",
   "position": "where in the artifact",
-  "expected_impact": "what score improvement is expected and why",
-  "updated_artifact": "the COMPLETE updated artifact content"
-}`;
+  "expected_impact": "what score improvement is expected and why"
+}
+\`\`\`
+
+===UPDATED_ARTIFACT===
+(paste the COMPLETE updated artifact content here — the entire file, not just the changed part)
+===END_ARTIFACT===`;
 }
 
 // ── Output Parser ───────────────────────────────────────────────────────
 
 function parseMutationOutput(raw: string): MutationOutput {
-  // Extract JSON from potential markdown code block
-  let jsonStr = raw.trim();
+  const text = raw.trim();
+
+  // Strategy 1: Split on ===UPDATED_ARTIFACT=== delimiter
+  const delimiterMatch = text.split('===UPDATED_ARTIFACT===');
+  if (delimiterMatch.length >= 2) {
+    const metadataPart = delimiterMatch[0].trim();
+    let artifactPart = delimiterMatch.slice(1).join('===UPDATED_ARTIFACT===');
+    // Strip ===END_ARTIFACT=== if present
+    const endIdx = artifactPart.indexOf('===END_ARTIFACT===');
+    if (endIdx !== -1) {
+      artifactPart = artifactPart.slice(0, endIdx);
+    }
+    artifactPart = artifactPart.trim();
+
+    // Extract JSON from the metadata part
+    const jsonBlockMatch = metadataPart.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
+    let jsonStr = jsonBlockMatch ? jsonBlockMatch[1].trim() : metadataPart;
+
+    // Find JSON object in the string
+    const firstBrace = jsonStr.indexOf('{');
+    const lastBrace = jsonStr.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      jsonStr = jsonStr.slice(firstBrace, lastBrace + 1);
+    }
+
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(jsonStr) as Record<string, unknown>;
+    } catch {
+      throw new Error(`Failed to parse mutation metadata JSON:\n${jsonStr.slice(0, 500)}`);
+    }
+
+    // Inject the artifact from the delimiter block
+    parsed['updated_artifact'] = artifactPart;
+    return validateAndReturn(parsed);
+  }
+
+  // Strategy 2: Legacy — try to parse entire response as JSON (with updated_artifact inline)
+  let jsonStr = text;
   const jsonBlockMatch = jsonStr.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
   if (jsonBlockMatch) {
     jsonStr = jsonBlockMatch[1].trim();
@@ -115,10 +158,23 @@ function parseMutationOutput(raw: string): MutationOutput {
   try {
     parsed = JSON.parse(jsonStr) as Record<string, unknown>;
   } catch {
-    throw new Error(`Failed to parse mutation output as JSON:\n${raw.slice(0, 500)}`);
+    const firstBrace = jsonStr.indexOf('{');
+    const lastBrace = jsonStr.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      try {
+        parsed = JSON.parse(jsonStr.slice(firstBrace, lastBrace + 1)) as Record<string, unknown>;
+      } catch {
+        throw new Error(`Failed to parse mutation output as JSON:\n${raw.slice(0, 500)}`);
+      }
+    } else {
+      throw new Error(`Failed to parse mutation output as JSON:\n${raw.slice(0, 500)}`);
+    }
   }
 
-  // Validate required fields
+  return validateAndReturn(parsed);
+}
+
+function validateAndReturn(parsed: Record<string, unknown>): MutationOutput {
   const required = [
     'diagnosis',
     'mutation_type',
