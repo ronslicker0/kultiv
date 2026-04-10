@@ -110,6 +110,37 @@ textarea.pg-input{font-family:'Consolas','Monaco','Courier New',monospace;font-s
 .dlg-spec .dlg-label{color:var(--text2);font-size:11px;text-transform:uppercase;letter-spacing:.3px}
 .dlg-tokens{display:flex;gap:16px;font-size:12px;color:var(--text2);margin-top:8px}
 tr.expanded td{border-bottom:none}
+.docs-btn{background:transparent;color:var(--text2);border:1px solid var(--border);padding:6px 12px;font-size:13px;margin-left:auto;display:flex;align-items:center;gap:6px}
+.docs-btn:hover{color:var(--text);border-color:var(--text2)}
+.docs-btn svg{width:16px;height:16px}
+.docs-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:100;opacity:0;pointer-events:none;transition:opacity .2s}
+.docs-overlay.open{opacity:1;pointer-events:auto}
+.docs-panel{position:fixed;top:0;right:0;bottom:0;width:480px;max-width:90vw;background:var(--surface);border-left:1px solid var(--border);z-index:101;transform:translateX(100%);transition:transform .25s ease;display:flex;flex-direction:column}
+.docs-panel.open{transform:translateX(0)}
+.docs-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);flex-shrink:0}
+.docs-header h2{font-size:16px;font-weight:600}
+.docs-close{background:transparent;color:var(--text2);padding:4px 8px;font-size:18px}
+.docs-close:hover{color:var(--text)}
+.docs-nav{display:flex;gap:2px;padding:8px 12px;border-bottom:1px solid var(--border);flex-shrink:0;overflow-x:auto}
+.docs-nav button{background:transparent;color:var(--text2);padding:6px 12px;font-size:12px;white-space:nowrap;border-radius:4px}
+.docs-nav button.active{background:var(--surface2);color:var(--text)}
+.docs-body{flex:1;overflow-y:auto;padding:20px;font-size:14px;line-height:1.7}
+.docs-body h1{font-size:20px;font-weight:700;margin:0 0 12px;color:var(--text)}
+.docs-body h2{font-size:16px;font-weight:600;margin:20px 0 8px;color:var(--text);border-bottom:1px solid var(--border);padding-bottom:4px}
+.docs-body h3{font-size:14px;font-weight:600;margin:16px 0 6px;color:var(--text)}
+.docs-body p{margin:8px 0;color:var(--text2)}
+.docs-body ul,.docs-body ol{margin:8px 0;padding-left:20px;color:var(--text2)}
+.docs-body li{margin:4px 0}
+.docs-body code{background:var(--surface2);padding:2px 6px;border-radius:3px;font-size:13px;font-family:'Consolas','Monaco','Courier New',monospace}
+.docs-body pre{background:var(--surface2);border-radius:6px;padding:12px;overflow-x:auto;font-size:12px;line-height:1.5;margin:8px 0}
+.docs-body pre code{background:none;padding:0}
+.docs-body table{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0}
+.docs-body table th{text-align:left;color:var(--text2);font-weight:500;padding:6px 8px;border-bottom:1px solid var(--border)}
+.docs-body table td{padding:6px 8px;border-bottom:1px solid var(--border);color:var(--text2)}
+.docs-body strong{color:var(--text);font-weight:600}
+.docs-body .tip{background:rgba(59,130,246,.1);border:1px solid rgba(59,130,246,.2);border-radius:6px;padding:10px 14px;margin:10px 0;font-size:13px}
+.docs-search{padding:8px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
+.docs-search input{width:100%;padding:8px 12px;font-size:13px}
 </style>
 </head>
 <body>
@@ -894,9 +925,254 @@ function Playground(){
   </div>\`;
 }
 
+// ── Docs Panel ──────────────────────────────────────────────────────
+const DOCS_SECTIONS=[
+  {id:'quickstart',title:'Quick Start',content:\`<h1>Quick Start</h1>
+<p>Get started improving your AI agent prompts in 4 commands:</p>
+<pre><code>cd your-project
+kultiv init                       # creates .kultiv/ with config
+kultiv add my-agent ./agents/my-agent.md
+kultiv baseline                   # score the current version
+kultiv evolve -n 10               # run 10 improvement experiments</code></pre>
+<h2>What Happens</h2>
+<ol>
+<li><strong>Score</strong> — run your evaluator chain against the current artifact</li>
+<li><strong>Mutate</strong> — single LLM call to apply one small change</li>
+<li><strong>Re-score</strong> — same tests on the mutated version</li>
+<li><strong>Keep or Revert</strong> — better score? Keep. Worse? Auto-revert</li>
+<li><strong>Learn</strong> — every few experiments, Kultiv revises its own mutation strategy</li>
+</ol>
+<div class="tip"><strong>Tip:</strong> Start with <code>kultiv baseline</code> to see where your prompts score before evolving.</div>\`},
+  {id:'mutations',title:'Mutation Types',content:\`<h1>9 Mutation Types</h1>
+<p>Each experiment applies exactly one mutation. The type is chosen based on the meta-strategy and recent results.</p>
+<table>
+<tr><th>Type</th><th>What It Does</th><th>When Selected</th></tr>
+<tr><td><code>ADD_RULE</code></td><td>Add a new instruction</td><td>Missing behavior detected</td></tr>
+<tr><td><code>ADD_EXAMPLE</code></td><td>Add a "do this" example</td><td>Rule exists but misapplied</td></tr>
+<tr><td><code>ADD_NEGATIVE_EXAMPLE</code></td><td>Add a "don't do this" example</td><td>Same mistake repeats 3+ times</td></tr>
+<tr><td><code>REORDER</code></td><td>Move a section up or down</td><td>Important rule buried too deep</td></tr>
+<tr><td><code>SIMPLIFY</code></td><td>Remove redundant content</td><td>Artifact bloated with low improvement</td></tr>
+<tr><td><code>REPHRASE</code></td><td>Rewrite for clarity</td><td>Scores fluctuate on same content</td></tr>
+<tr><td><code>DELETE_RULE</code></td><td>Remove a rule</td><td>Rule consistently causes regressions</td></tr>
+<tr><td><code>MERGE_RULES</code></td><td>Combine related rules</td><td>Scattered rules cover same topic</td></tr>
+<tr><td><code>RESTRUCTURE</code></td><td>Reorganize the whole artifact</td><td>Related content too far apart</td></tr>
+</table>
+<h2>Selection Rules</h2>
+<ul>
+<li>Never applies the same type twice in a row</li>
+<li>Forces structural mutations after 3 consecutive additions</li>
+<li>Deprioritizes types with &lt;20% success rate over last 10 runs</li>
+</ul>
+<h2>Risk Levels</h2>
+<p><strong>Zero risk:</strong> REORDER (no content changes)<br/>
+<strong>Low risk:</strong> ADD_RULE, ADD_EXAMPLE, REPHRASE (additive changes)<br/>
+<strong>Medium risk:</strong> ADD_NEGATIVE_EXAMPLE, SIMPLIFY, MERGE_RULES<br/>
+<strong>High risk:</strong> DELETE_RULE, RESTRUCTURE (can remove or reorder significantly)</p>\`},
+  {id:'scoring',title:'Scoring',content:\`<h1>Scoring System</h1>
+<p>Artifacts are scored using a <strong>weighted chain</strong> of evaluators. The total score is normalized to 100.</p>
+<h2>Evaluator Types</h2>
+<h3>Command Scorer (script)</h3>
+<p>Runs a shell command (e.g., <code>npx tsc --noEmit</code>). Score derived from exit code and output parsing. Deterministic, zero LLM tokens.</p>
+<h3>Pattern Scorer</h3>
+<p>Regex rules against artifact content. Good for structural checks (section headers, required patterns). Configured via YAML rules file.</p>
+<h3>LLM Judge</h3>
+<p>Sends artifact to the LLM with a scoring rubric. Nuanced quality assessment but costs tokens. Configured via markdown rubric file.</p>
+<h2>Chain Configuration</h2>
+<pre><code>scorer:
+  chain:
+    - name: typecheck
+      command: "npx tsc --noEmit"
+      type: script
+      weight: 3
+    - name: tests
+      command: "npx vitest run"
+      type: script
+      weight: 2
+    - name: quality
+      type: llm-judge
+      rules_file: .kultiv/judge-rules.md
+      weight: 1</code></pre>
+<div class="tip"><strong>Tip:</strong> Use the Playground tab to test scoring against any content without running a full experiment.</div>\`},
+  {id:'evolution',title:'Evolution',content:\`<h1>Evolution Loop</h1>
+<h2>Inner Loop</h2>
+<p>The core cycle that runs for each experiment:</p>
+<ol>
+<li><strong>Score</strong> — run evaluator chain on current artifact</li>
+<li><strong>Select mutation type</strong> — pick from 9 types based on meta-strategy</li>
+<li><strong>Mutate</strong> — single LLM call to apply the chosen mutation</li>
+<li><strong>Re-score</strong> — same evaluator chain on mutated version</li>
+<li><strong>Compare</strong> — better? Keep. Worse? Auto-revert</li>
+<li><strong>Archive</strong> — log result to JSONL archive</li>
+</ol>
+<h2>Outer Loop (Meta-Evolution)</h2>
+<p>Every N experiments (default: 10), Kultiv analyzes which mutation types succeed and which fail, then rewrites its own meta-strategy.</p>
+<h2>Dialogue Trace</h2>
+<p>Each mutation goes through a 4-round internal dialogue:</p>
+<ol>
+<li><strong>Explore</strong> — generate 5 candidate mutations</li>
+<li><strong>Critique</strong> — evaluate and select the best candidate</li>
+<li><strong>Specify</strong> — write the exact change to apply</li>
+<li><strong>Validate</strong> — sanity-check the specification</li>
+</ol>
+<p>You can see these details by clicking any row in the Evolution tab.</p>
+<h2>Anti-Pattern Detection</h2>
+<p>Zero-token heuristics detect when evolution is stuck:</p>
+<ul>
+<li><strong>Plateau</strong> — score hasn't improved over N experiments</li>
+<li><strong>Type fixation</strong> — same mutation type selected too often</li>
+<li><strong>Overfitting</strong> — high score on one evaluator, low on others</li>
+<li><strong>Bloat</strong> — artifact growing without score improvement</li>
+</ul>\`},
+  {id:'config',title:'Configuration',content:\`<h1>Configuration</h1>
+<p>Main config file: <code>.kultiv/config.yaml</code></p>
+<h2>LLM Settings</h2>
+<pre><code>llm:
+  provider: anthropic    # anthropic | openai | ollama | claude-code
+  model: claude-sonnet-4-20250514
+  auth_env: ANTHROPIC_API_KEY</code></pre>
+<h2>Evolution Settings</h2>
+<pre><code>evolution:
+  budget_per_session: 10    # max experiments per evolve run
+  feedback_interval: 3      # anti-pattern check every N runs
+  outer_interval: 10        # meta-strategy revision every N runs
+  plateau_window: 5         # experiments without improvement = plateau</code></pre>
+<h2>Automation</h2>
+<pre><code>automation:
+  hook_mode: false           # Claude Code post-session hooks
+  daemon_mode: false         # background cron daemon
+  daemon_schedule: "*/30 * * * *"
+  cooldown_minutes: 10
+  auto_commit: true
+  auto_push: false           # safety: manual review before push
+  max_regressions_before_pause: 3</code></pre>
+<div class="tip"><strong>Safety:</strong> <code>auto_push</code> defaults to false — you always review before pushing to remote.</div>\`},
+  {id:'cli',title:'CLI Reference',content:\`<h1>CLI Reference</h1>
+<table>
+<tr><th>Command</th><th>Description</th></tr>
+<tr><td><code>kultiv init</code></td><td>Create .kultiv/ directory with config and empty archive</td></tr>
+<tr><td><code>kultiv add &lt;name&gt; &lt;path&gt;</code></td><td>Register an artifact to evolve</td></tr>
+<tr><td><code>kultiv baseline</code></td><td>Score artifacts without changing them</td></tr>
+<tr><td><code>kultiv run</code></td><td>Run a single mutation experiment</td></tr>
+<tr><td><code>kultiv evolve -n &lt;N&gt;</code></td><td>Run N experiments in a session</td></tr>
+<tr><td><code>kultiv status</code></td><td>Show scores, mutation counts, anti-patterns</td></tr>
+<tr><td><code>kultiv history</code></td><td>Show experiment archive (most recent first)</td></tr>
+<tr><td><code>kultiv trace "&lt;cmd&gt;"</code></td><td>Wrap a shell command as a traced run</td></tr>
+<tr><td><code>kultiv pause</code></td><td>Pause an active evolution session</td></tr>
+<tr><td><code>kultiv resume</code></td><td>Resume a paused session</td></tr>
+<tr><td><code>kultiv daemon start</code></td><td>Start background automation daemon</td></tr>
+<tr><td><code>kultiv daemon stop</code></td><td>Stop the daemon</td></tr>
+<tr><td><code>kultiv dashboard</code></td><td>Open web dashboard at localhost:4200</td></tr>
+</table>
+<h2>Global Options</h2>
+<p>All commands accept <code>-c, --config &lt;path&gt;</code> to use a custom config file.</p>
+<h2>Presets</h2>
+<pre><code>kultiv init --preset nextjs      # Next.js apps
+kultiv init --preset typescript  # TypeScript libraries
+kultiv init --preset python      # Python projects
+kultiv init --preset go          # Go projects
+kultiv init --preset rust        # Rust projects</code></pre>\`},
+  {id:'dashboard',title:'Dashboard Guide',content:\`<h1>Dashboard Guide</h1>
+<p>This dashboard shows real-time evolution data. Here's what each tab does:</p>
+<h2>Overview</h2>
+<p>Summary stats: total experiments, success rate, token usage, and session status. The score chart shows improvement over time for each artifact.</p>
+<h2>Artifacts</h2>
+<p>List of registered artifacts with their current scores, mutation counts, and success rates. Click an artifact to see its full score history.</p>
+<h2>Evolution</h2>
+<p>Experiment history table. Click any row to expand the <strong>dialogue trace</strong> — showing the Explore candidates, Critique reasoning, and final Specification that was applied.</p>
+<h2>Playground</h2>
+<p>Score any content against your evaluator chains without running a full experiment. Paste a prompt, select a scoring chain, and click "Score It". You can also save scored content as a new artifact.</p>
+<h2>Traces</h2>
+<p>Detailed run logs including scorecards, errors, and execution traces. Useful for debugging scoring issues.</p>
+<h2>Settings</h2>
+<p>Configure LLM provider, evolution parameters, and automation settings. Changes are saved to <code>.kultiv/config.yaml</code>.</p>
+<div class="tip"><strong>Tip:</strong> The dashboard auto-refreshes data. You can run <code>kultiv evolve</code> in a terminal and watch progress here in real-time.</div>\`},
+  {id:'workflow',title:'Workflows',content:\`<h1>Common Workflows</h1>
+<h2>First-Time Setup</h2>
+<pre><code># 1. Initialize in your project
+kultiv init --preset nextjs
+
+# 2. Register artifacts to evolve
+kultiv add lilly-persona src/lib/lilly/prompts/persona.md
+
+# 3. Establish baseline scores
+kultiv baseline
+
+# 4. Open dashboard to monitor
+kultiv dashboard</code></pre>
+<h2>Overnight Evolution</h2>
+<pre><code># Run 30 experiments unattended
+kultiv evolve -n 30
+
+# Check results in the morning
+kultiv status</code></pre>
+<h2>Targeted Improvement</h2>
+<p>When a specific criterion scores low:</p>
+<ol>
+<li>Check the <strong>Insights</strong> panel for weak criteria</li>
+<li>Run a single experiment: <code>kultiv run</code></li>
+<li>Expand the result in Evolution tab to see what mutation was tried</li>
+<li>If it worked, run more: <code>kultiv evolve -n 5</code></li>
+</ol>
+<h2>Understanding the Dialogue Trace</h2>
+<p>When you see output like "Explore — 5 Candidates", that's the mutation dialogue:</p>
+<ul>
+<li><strong>[ADD_RULE]</strong>, <strong>[REORDER]</strong>, etc. — the mutation type being proposed</li>
+<li><strong>low/medium/high risk</strong> — how likely the change could cause regressions</li>
+<li><strong>Critique</strong> — why this specific candidate was chosen over the others</li>
+<li><strong>Specification</strong> — the exact change that will be applied to the artifact</li>
+</ul>
+<h2>Reading Scores</h2>
+<p>Scores are percentages per rubric criterion:</p>
+<ul>
+<li><strong>0-40%</strong> — Minimal: criterion barely addressed</li>
+<li><strong>40-60%</strong> — Below target: key gaps remain</li>
+<li><strong>60-80%</strong> — Good: meets requirements with room for polish</li>
+<li><strong>80-100%</strong> — Excellent: exceeds expectations</li>
+</ul>\`}
+];
+
+function DocsPanel({open,onClose}){
+  const[activeDoc,setActiveDoc]=useState('quickstart');
+  const[search,setSearch]=useState('');
+  const bodyRef=useRef(null);
+
+  const filtered=search.trim()
+    ?DOCS_SECTIONS.filter(s=>s.title.toLowerCase().includes(search.toLowerCase())||s.content.toLowerCase().includes(search.toLowerCase()))
+    :DOCS_SECTIONS;
+  const current=DOCS_SECTIONS.find(s=>s.id===activeDoc)||DOCS_SECTIONS[0];
+
+  useEffect(()=>{
+    if(bodyRef.current)bodyRef.current.scrollTop=0;
+  },[activeDoc]);
+
+  useEffect(()=>{
+    const handleKey=(e)=>{if(e.key==='Escape'&&open)onClose()};
+    document.addEventListener('keydown',handleKey);
+    return()=>document.removeEventListener('keydown',handleKey);
+  },[open,onClose]);
+
+  return html\`<\${Fragment}>
+    <div class="docs-overlay \${open?'open':''}" onclick=\${onClose}></div>
+    <div class="docs-panel \${open?'open':''}">
+      <div class="docs-header">
+        <h2>Documentation</h2>
+        <button class="docs-close" onclick=\${onClose}>✕</button>
+      </div>
+      <div class="docs-search">
+        <input type="text" placeholder="Search docs..." value=\${search} onInput=\${e=>setSearch(e.target.value)}/>
+      </div>
+      <div class="docs-nav">
+        \${filtered.map(s=>html\`<button class=\${activeDoc===s.id?'active':''} onclick=\${()=>setActiveDoc(s.id)}>\${s.title}</button>\`)}
+      </div>
+      <div class="docs-body" ref=\${bodyRef} dangerouslySetInnerHTML=\${{__html:current.content}}></div>
+    </div>
+  </\${Fragment}>\`;
+}
+
 // ── App ──────────────────────────────────────────────────────────────
 function App(){
   const[tab,setTab]=useState('overview');
+  const[docsOpen,setDocsOpen]=useState(false);
   const tabs=[['overview','Overview'],['artifacts','Artifacts'],['evolution','Evolution'],['playground','Playground'],['traces','Traces'],['settings','Settings']];
   const content={overview:Overview,artifacts:Artifacts,evolution:Evolution,playground:Playground,traces:Traces,settings:Settings};
   const Tab=content[tab];
@@ -905,10 +1181,15 @@ function App(){
     <header><div class="container inner">
       <h1>Kultiv</h1>
       <nav>\${tabs.map(([k,label])=>html\`<button class=\${tab===k?'active':''} onclick=\${()=>setTab(k)}>\${label}</button>\`)}</nav>
+      <button class="docs-btn" onclick=\${()=>setDocsOpen(true)}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M8 7h8M8 11h6"/></svg>
+        Docs
+      </button>
     </div></header>
     <main class="container" style="padding-top:16px;padding-bottom:40px">
       <\${Tab}/>
-    </main>\`;
+    </main>
+    <\${DocsPanel} open=\${docsOpen} onClose=\${()=>setDocsOpen(false)}/>\`;
 }
 
 render(html\`<\${App}/>\`,document.getElementById('app'));

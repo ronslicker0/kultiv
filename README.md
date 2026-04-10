@@ -77,7 +77,7 @@ my-agent: 91/100 (91%)
 - **Improves how it improves** -- a second evolution loop rewrites the mutation strategy based on what's actually working
 - **Diagnostic mutations** -- feeds real production failures from `.kultiv/pending/` into the mutation engine so it fixes what actually broke, not what it guesses might be wrong
 - **Agent scanning** -- `kultiv scan` analyzes any prompt for purpose, structure, and improvement opportunities (trim, expand, combine, split, add examples)
-- **Insights dashboard** -- built-in web dashboard at localhost:4200 shows scores, per-criterion breakdowns, pending failures, scan analyses, and mutation history
+- **Insights dashboard** -- built-in web dashboard at localhost:4200 shows scores, per-criterion breakdowns, pending failures, scan analyses, and mutation history. Includes a built-in documentation panel accessible via the Docs button in the header
 - **Runs while you sleep** -- hook into Claude Code post-session events or schedule via cron/Task Scheduler
 - **Works with Anthropic, OpenAI, Ollama, Claude Code** -- bring your own provider and model
 
@@ -119,6 +119,10 @@ The scan produces a structural analysis with:
 - **Feature flags** -- whether the prompt includes examples, negative examples, and decision trees
 
 Scan results are saved to `.kultiv/scans/` and automatically fed into the mutation engine during evolution.
+
+### Dashboard Documentation Panel
+
+The web dashboard includes a built-in documentation panel. Click the **Docs** button in the top-right corner of the header to open a slide-out panel with searchable documentation covering Quick Start, Mutation Types, Scoring, Evolution, Configuration, CLI Reference, Dashboard Guide, and Workflows. Press Escape or click outside to close.
 
 ### Diagnostic Mutations
 
@@ -364,7 +368,7 @@ src/
   automation/     cron daemon, hook trigger, pending queue, lockfile
   llm/            Anthropic, OpenAI, Ollama, Claude Code adapters
   safety/         git branch-per-experiment, auto-merge, auto-abandon
-  dashboard/      Preact SPA with insights panel, score charts, mutation history
+  dashboard/      Preact SPA with insights panel, score charts, mutation history, built-in docs
 
 bin/
   kultiv.ts       CLI entry point (Commander.js)
