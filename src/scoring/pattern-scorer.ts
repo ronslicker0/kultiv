@@ -8,6 +8,7 @@ interface PatternRule {
   pattern: string;
   message: string;
   severity: 'error' | 'warning';
+  mode?: 'forbid' | 'require';
 }
 
 interface PatternRulesFile {
@@ -89,18 +90,22 @@ export function runPatternScorer(
   const matches: PatternMatch[] = [];
   let deductions = 0;
 
-  for (const rule of rules) {
+  // Split rules by mode
+  const forbidRules = rules.filter(r => (r.mode ?? 'forbid') === 'forbid');
+  const requireRules = rules.filter(r => r.mode === 'require');
+
+  // Forbid rules: penalize each line where pattern IS found
+  for (const rule of forbidRules) {
     let regex: RegExp;
     try {
       regex = new RegExp(rule.pattern, 'g');
     } catch {
-      // Skip invalid regex patterns
       continue;
     }
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      regex.lastIndex = 0; // Reset for each line
+      regex.lastIndex = 0;
       const result = regex.exec(line);
       if (result) {
         const penalty = rule.severity === 'error' ? 10 : 5;
@@ -111,6 +116,27 @@ export function runPatternScorer(
           match: result[0].slice(0, 100),
         });
       }
+    }
+  }
+
+  // Require rules: penalize if pattern is NOT found anywhere in file
+  for (const rule of requireRules) {
+    let regex: RegExp;
+    try {
+      regex = new RegExp(rule.pattern);
+    } catch {
+      continue;
+    }
+
+    const found = lines.some(line => regex.test(line));
+    if (!found) {
+      const penalty = rule.severity === 'error' ? 10 : 5;
+      deductions += penalty;
+      matches.push({
+        rule,
+        line: 0,
+        match: '(required pattern not found)',
+      });
     }
   }
 

@@ -11,6 +11,8 @@ export interface LLMJudgeConfig {
 interface JudgeCheck {
   name: string;
   passed: boolean;
+  score?: number;
+  max?: number;
   note: string;
 }
 
@@ -48,7 +50,13 @@ export async function runLLMJudge(
 ): Promise<EvaluatorResult> {
   const rubric = config.rubric ?? DEFAULT_RUBRIC;
 
-  const prompt = `You are an expert evaluator. Score the following artifact on a scale of 0-100.
+  const prompt = `You are a strict, calibrated evaluator. Score EACH criterion independently using the tier descriptions in the rubric, then SUM the scores.
+
+## Scoring Rules
+- For each criterion, select the tier whose description the artifact FULLY satisfies. If between tiers, use the LOWER tier.
+- The total score is the arithmetic SUM of all criterion scores. Do NOT adjust holistically.
+- Calibration: 50-65 is normal for a solid prompt. Above 80 requires concrete code examples, edge cases, AND negative examples. Below 40 means major gaps.
+- "Mentioning" a topic is NOT the same as "covering" it. Require: specific patterns, copy-pasteable code, failure mode handling, actionable constraints.
 
 ## Rubric
 ${rubric}
@@ -58,14 +66,17 @@ ${rubric}
 ${artifactContent}
 \`\`\`
 
-## Instructions
-Evaluate the artifact against the rubric above. Respond with ONLY a JSON object (no markdown fences, no extra text) in this exact format:
+## Response Format
+For each criterion, state which tier matched and why, then assign that tier's point value.
+Sum all criterion scores for the total.
+
+Respond with ONLY a JSON object (no markdown fences, no extra text):
 
 {
-  "score": <number 0-100>,
-  "reasoning": "<brief explanation of the score>",
+  "score": <SUM of criterion scores>,
+  "reasoning": "<1-2 sentence summary>",
   "checks": [
-    { "name": "<criterion name>", "passed": <true/false>, "note": "<brief note>" }
+    { "name": "<criterion>", "passed": <true if score >= 50% of max>, "score": <pts awarded>, "max": <max pts>, "note": "<tier + reason>" }
   ]
 }`;
 
@@ -73,7 +84,7 @@ Evaluate the artifact against the rubric above. Respond with ONLY a JSON object 
   try {
     const response = await config.provider.generate(
       [{ role: 'user', content: prompt }],
-      { maxTokens: 2048, temperature: 0.3 }
+      { maxTokens: 2048, temperature: 0.1 }
     );
     rawContent = response.content;
   } catch (err) {
@@ -105,8 +116,13 @@ Evaluate the artifact against the rubric above. Respond with ONLY a JSON object 
     };
   }
 
-  // Clamp score to 0-100
-  const clampedScore = Math.max(0, Math.min(100, judgeResult.score));
+  // Compute score: prefer summing individual check scores over trusting the LLM's holistic number
+  let computedScore = judgeResult.score;
+  const checksWithScores = judgeResult.checks.filter(c => typeof c.score === 'number' && typeof c.max === 'number');
+  if (checksWithScores.length > 0) {
+    computedScore = checksWithScores.reduce((sum, c) => sum + (c.score ?? 0), 0);
+  }
+  const clampedScore = Math.max(0, Math.min(100, computedScore));
   const normalizedScore = clampedScore / 100; // Map to 0..1
 
   return {
