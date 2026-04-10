@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createPatch } from 'diff';
 import type { EvoConfig } from '../core/config.js';
-import { Archive, type ArchiveEntry } from '../core/archive.js';
+import { Archive, type ArchiveEntry, type ScorecardCheck } from '../core/archive.js';
 import { loadArtifact } from '../core/artifact.js';
 import type { LLMProvider } from '../llm/provider.js';
 import { proposeMutation, type MutationContext } from '../mutation/single-call.js';
@@ -31,6 +31,32 @@ export interface InnerLoopResult {
   status: 'success' | 'regression' | 'crash' | 'neutral';
   diff: string | null;
   tokenCost: number;
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * Extract per-criterion check scores from a scorecard's evaluator details.
+ * The LLM judge stores checks in details.checks with { name, score, max, note }.
+ */
+function extractScorecardChecks(scorecard: Scorecard): ScorecardCheck[] {
+  const checks: ScorecardCheck[] = [];
+  for (const evaluator of scorecard.evaluators) {
+    const rawChecks = evaluator.details?.checks;
+    if (Array.isArray(rawChecks)) {
+      for (const c of rawChecks) {
+        if (typeof c.name === 'string' && typeof c.score === 'number' && typeof c.max === 'number') {
+          checks.push({
+            name: c.name as string,
+            score: c.score as number,
+            max: c.max as number,
+            ...(typeof c.note === 'string' ? { note: c.note as string } : {}),
+          });
+        }
+      }
+    }
+  }
+  return checks;
 }
 
 // ── Inner Loop ──────────────────────────────────────────────────────────
@@ -236,7 +262,10 @@ export async function innerLoop(
     returnToBaseBranch(projectRoot);
   }
 
-  // 11. Log to archive
+  // 11. Extract per-criterion checks from scorecard
+  const scorecardChecks = extractScorecardChecks(newScorecard);
+
+  // 12. Log to archive
   const entry: ArchiveEntry = {
     genid,
     artifact: artifactId,
@@ -253,6 +282,7 @@ export async function innerLoop(
     token_cost: tokenCost,
     automated: false,
     ...(mutationResult.dialogue_trace ? { dialogue_trace: mutationResult.dialogue_trace } : {}),
+    ...(scorecardChecks.length > 0 ? { scorecard_checks: scorecardChecks } : {}),
   };
   archive.append(entry);
 

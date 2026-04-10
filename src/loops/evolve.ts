@@ -118,6 +118,93 @@ export function clearSession(kultivDir: string): void {
 
 // ── Evolve Orchestrator ─────────────────────────────────────────────────
 
+// ── Improvement Report ─────────────────────────────────────────────────
+
+/**
+ * Generate an improvement report when a plateau is detected.
+ * Surfaces per-criterion scores from the most recent archive entry
+ * so operators know exactly which criteria need manual attention.
+ */
+function writeImprovementReport(
+  kultivDir: string,
+  artifactId: string,
+  archive: Archive,
+): void {
+  const entries = archive.getByArtifact(artifactId);
+  const latest = entries[entries.length - 1];
+  if (!latest) return;
+
+  const checks = latest.scorecard_checks ?? [];
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const reportPath = join(kultivDir, 'reports', `${artifactId}-${timestamp}.md`);
+
+  const reportsDir = join(kultivDir, 'reports');
+  if (!existsSync(reportsDir)) {
+    mkdirSync(reportsDir, { recursive: true });
+  }
+
+  // Build per-criterion breakdown
+  let criteriaSection = '';
+  if (checks.length > 0) {
+    const sorted = [...checks].sort((a, b) => (a.score / a.max) - (b.score / b.max));
+    criteriaSection = `## Per-Criterion Breakdown\n\n`;
+    criteriaSection += `| Criterion | Score | Max | % | Status |\n`;
+    criteriaSection += `|-----------|-------|-----|---|--------|\n`;
+    for (const c of sorted) {
+      const pct = Math.round((c.score / c.max) * 100);
+      const status = pct >= 75 ? 'Good' : pct >= 50 ? 'Adequate' : 'Needs Work';
+      criteriaSection += `| ${c.name} | ${c.score} | ${c.max} | ${pct}% | ${status} |\n`;
+    }
+    criteriaSection += '\n';
+
+    // Weakest criteria recommendations
+    const weak = sorted.filter(c => (c.score / c.max) < 0.75);
+    if (weak.length > 0) {
+      criteriaSection += `## Recommended Improvements\n\n`;
+      criteriaSection += `Focus on these criteria to break through the plateau:\n\n`;
+      for (const c of weak) {
+        const pct = Math.round((c.score / c.max) * 100);
+        const gap = c.max - c.score;
+        criteriaSection += `### ${c.name} (${pct}% — ${gap} pts available)\n\n`;
+        if (c.note) {
+          criteriaSection += `Current assessment: ${c.note}\n\n`;
+        }
+        criteriaSection += `To improve: add concrete code examples, decision trees, negative examples, or edge case handling for this criterion.\n\n`;
+      }
+    }
+  } else {
+    criteriaSection = `## Per-Criterion Breakdown\n\nNo per-criterion data available. Run a baseline with the latest scoring engine to populate.\n\n`;
+  }
+
+  // Mutation history summary
+  const recentHistory = entries.slice(-10);
+  let historySection = `## Recent Mutation History\n\n`;
+  historySection += `| Gen | Type | Score | Status |\n`;
+  historySection += `|-----|------|-------|--------|\n`;
+  for (const e of recentHistory) {
+    historySection += `| ${e.genid} | ${e.mutation_type} | ${e.score ?? 'n/a'}/${e.max_score} | ${e.status} |\n`;
+  }
+  historySection += '\n';
+
+  const report = `# Improvement Report: ${artifactId}
+
+Generated: ${new Date().toISOString()}
+Current Score: ${latest.score}/${latest.max_score} (${latest.score !== null ? Math.round((latest.score / latest.max_score) * 100) : 'n/a'}%)
+Status: PLATEAUED — automated mutations are not improving this agent
+
+${criteriaSection}
+${historySection}
+## Next Steps
+
+1. Review the weakest criteria above and manually improve the agent prompt
+2. Run \`kultiv baseline --artifact ${artifactId}\` to verify the score increased
+3. Resume evolution with \`kultiv evolve --artifact ${artifactId} --budget 5\`
+`;
+
+  writeFileSync(reportPath, report, 'utf-8');
+  console.log(cyan(`  Improvement report written: ${reportPath}`));
+}
+
 /**
  * Full evolution orchestrator combining inner loop, feedback, and outer loop.
  *
@@ -316,6 +403,8 @@ export async function evolve(
     if ((shouldRunOuter || isPlateaued) && !options?.dryRun) {
       if (isPlateaued) {
         console.log(yellow(`\n  Plateau detected on ${artifactId} \u2014 triggering meta-strategy revision`));
+        // Generate improvement report with per-criterion breakdown
+        writeImprovementReport(kultivDir, artifactId, archive);
       } else {
         console.log(dim('\n  Running outer loop (meta-strategy revision)...'));
       }

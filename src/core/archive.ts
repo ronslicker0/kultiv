@@ -6,6 +6,13 @@ import type { DialogueTrace } from '../mutation/types.js';
 
 export type ArchiveStatus = 'baseline' | 'success' | 'regression' | 'crash' | 'neutral';
 
+export interface ScorecardCheck {
+  name: string;
+  score: number;
+  max: number;
+  note?: string;
+}
+
 export interface ArchiveEntry {
   genid: number;
   artifact: string;
@@ -22,6 +29,7 @@ export interface ArchiveEntry {
   token_cost: number | null;
   automated: boolean;
   dialogue_trace?: DialogueTrace;
+  scorecard_checks?: ScorecardCheck[];
 }
 
 export type ArchiveFilter = Partial<Pick<ArchiveEntry, 'artifact' | 'status' | 'run_id' | 'automated'>>;

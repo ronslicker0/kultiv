@@ -241,6 +241,75 @@ function LineChart({series,width=600,height=200}){
   </div>\`;
 }
 
+// ── Insights Panel ──────────────────────────────────────────────────
+function InsightsPanel(){
+  const[data,setData]=useState(null);
+  const[reportContent,setReportContent]=useState(null);
+  const load=useCallback(async()=>{
+    const d=await api('insights');
+    if(!d.error)setData(d);
+  },[]);
+  useEffect(()=>{load();const t=setInterval(load,15000);return()=>clearInterval(t)},[load]);
+
+  const showReport=async(file)=>{
+    if(reportContent&&reportContent.file===file){setReportContent(null);return}
+    const d=await api('reports/'+encodeURIComponent(file));
+    if(!d.error)setReportContent(d);
+  };
+
+  if(!data)return null;
+  const{insights,reports}=data;
+  const needsAttention=insights.filter(i=>i.weak_criteria.length>0||i.is_plateaued);
+  const recentSuccesses=insights.filter(i=>i.last_success);
+
+  if(needsAttention.length===0&&recentSuccesses.length===0&&(!reports||reports.length===0))return null;
+
+  return html\`<div>
+    \${needsAttention.length>0?html\`<div class="panel mt" style="border-color:rgba(234,179,8,.4)">
+      <h3 style="color:var(--yellow);margin-bottom:12px">Improvement Suggestions</h3>
+      \${needsAttention.map(i=>html\`<div style="margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--border)">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <span style="font-weight:700">\${i.artifact}</span>
+          <span style="color:var(--text2)">\${i.current_score}/\${i.max_score}</span>
+          \${i.is_plateaued?html\`<span class="badge regression" style="background:rgba(239,68,68,.1)">PLATEAUED</span>\`:null}
+        </div>
+        \${i.weak_criteria.length>0?html\`<table style="font-size:13px">
+          <tr><th style="padding:4px 8px">Criterion</th><th style="padding:4px 8px">Score</th><th style="padding:4px 8px">Max</th><th style="padding:4px 8px">%</th><th style="padding:4px 8px">Points Available</th></tr>
+          \${i.weak_criteria.map(c=>html\`<tr>
+            <td style="padding:4px 8px">\${c.name}</td>
+            <td style="padding:4px 8px;color:\${c.pct<50?'var(--red)':'var(--yellow)'}">\${c.score}</td>
+            <td style="padding:4px 8px">\${c.max}</td>
+            <td style="padding:4px 8px">\${c.pct}%</td>
+            <td style="padding:4px 8px;color:var(--green)">+\${c.gap}</td>
+          </tr>\`)}
+        </table>\`:null}
+        \${i.weak_criteria.length>0?html\`<div style="margin-top:8px;font-size:12px;color:var(--text2)">
+          Total improvement potential: <span style="color:var(--green);font-weight:600">+\${i.weak_criteria.reduce((s,c)=>s+c.gap,0)} points</span> across \${i.weak_criteria.length} criteria
+        </div>\`:null}
+      </div>\`)}
+    </div>\`:null}
+    \${recentSuccesses.length>0?html\`<div class="panel mt" style="border-color:rgba(34,197,94,.4)">
+      <h3 style="color:var(--green);margin-bottom:12px">Recent Improvements</h3>
+      <table style="font-size:13px">
+        <tr><th>Agent</th><th>Score</th><th>Mutation</th><th>When</th></tr>
+        \${recentSuccesses.map(i=>html\`<tr>
+          <td>\${i.artifact}</td>
+          <td style="color:var(--green)">\${i.last_success.score}/\${i.max_score}</td>
+          <td><span class="badge success">\${i.last_success.mutation_type}</span></td>
+          <td style="color:var(--text2)">\${fmtDate(i.last_success.timestamp)}</td>
+        </tr>\`)}
+      </table>
+    </div>\`:null}
+    \${reports&&reports.length>0?html\`<div class="panel mt">
+      <h3 class="mb">Improvement Reports</h3>
+      \${reports.map(r=>html\`<div style="margin:6px 0">
+        <span class="clickable" style="color:var(--blue);cursor:pointer;font-size:13px" onclick=\${()=>showReport(r.file)}>\${r.artifact} — \${r.timestamp||r.file}</span>
+      </div>\`)}
+      \${reportContent?html\`<pre style="margin-top:8px;white-space:pre-wrap">\${reportContent.content}</pre>\`:null}
+    </div>\`:null}
+  </div>\`;
+}
+
 // ── Overview Tab ─────────────────────────────────────────────────────
 function Overview(){
   const[status,setStatus]=useState(null);
@@ -271,6 +340,7 @@ function Overview(){
       <div class="card"><div class="label">Success Rate</div><div class="value" style="color:var(--green)">\${status.success_rate}%</div></div>
       <div class="card"><div class="label">Tokens Spent</div><div class="value">\${(status.total_tokens||0).toLocaleString()}</div></div>
     </div>
+    <\${InsightsPanel}/>
     <div class="row">
       <div class="col"><div class="panel">
         <h3>Score Over Time</h3>

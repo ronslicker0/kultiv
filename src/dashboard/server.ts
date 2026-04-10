@@ -4,7 +4,7 @@
 
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
-import { readFileSync, existsSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -181,6 +181,98 @@ export async function startDashboard(
     if (!entry) return c.json({ error: 'Entry not found' }, 404);
 
     return c.json(entry);
+  });
+
+  // ── API: Insights (improvement suggestions + results) ──────────────
+  app.get('/api/insights', (c) => {
+    const archive = getArchive(absEvoDir);
+    const all = archive.getAll();
+    const artifactIds = [...new Set(all.map((e) => e.artifact))];
+
+    const insights: Array<Record<string, unknown>> = [];
+
+    for (const id of artifactIds) {
+      const entries = all.filter((e) => e.artifact === id);
+      const scored = entries.filter((e) => e.score !== null);
+      if (scored.length === 0) continue;
+
+      const latest = scored[scored.length - 1];
+      const checks = latest.scorecard_checks;
+
+      // Find weak criteria (below 75% of max)
+      const weakCriteria = (checks ?? [])
+        .filter((c) => c.score / c.max < 0.75)
+        .sort((a, b) => a.score / a.max - b.score / b.max)
+        .map((c) => ({
+          name: c.name,
+          score: c.score,
+          max: c.max,
+          pct: Math.round((c.score / c.max) * 100),
+          gap: c.max - c.score,
+          note: c.note ?? null,
+        }));
+
+      // Recent improvement results
+      const mutations = entries.filter((e) => e.status !== 'baseline').slice(-10);
+      const successes = mutations.filter((e) => e.status === 'success');
+      const recentSuccess = successes.length > 0 ? successes[successes.length - 1] : null;
+
+      // Detect plateau
+      const recentScores = scored.slice(-5).map((e) => e.score as number);
+      const isPlateaued = recentScores.length >= 3 &&
+        new Set(recentScores.map((s) => Math.round(s * 10))).size <= 2;
+
+      insights.push({
+        artifact: id,
+        current_score: latest.score,
+        max_score: latest.max_score,
+        is_plateaued: isPlateaued,
+        weak_criteria: weakCriteria,
+        total_mutations: mutations.length,
+        total_successes: successes.length,
+        last_success: recentSuccess ? {
+          genid: recentSuccess.genid,
+          score: recentSuccess.score,
+          mutation_type: recentSuccess.mutation_type,
+          timestamp: recentSuccess.timestamp,
+        } : null,
+      });
+    }
+
+    // Check for improvement report files
+    const reportsDir = join(absEvoDir, 'reports');
+    let reports: Array<{ artifact: string; file: string; timestamp: string }> = [];
+    if (existsSync(reportsDir)) {
+      try {
+        const files = readdirSync(reportsDir) as string[];
+        reports = files
+          .filter((f: string) => f.endsWith('.md'))
+          .map((f: string) => {
+            const match = f.match(/^(.+?)-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})\.md$/);
+            return {
+              artifact: match ? match[1] : f,
+              file: f,
+              timestamp: match ? match[2].replace(/-/g, (m: string, i: number) => i > 9 ? ':' : m) : '',
+            };
+          })
+          .sort((a: { timestamp: string }, b: { timestamp: string }) => b.timestamp.localeCompare(a.timestamp))
+          .slice(0, 10);
+      } catch { /* ignore */ }
+    }
+
+    return c.json({ insights, reports });
+  });
+
+  // ── API: Read improvement report ───────────────────────────────────
+  app.get('/api/reports/:file', (c) => {
+    const file = c.req.param('file');
+    if (file.includes('..') || file.includes('/') || file.includes('\\')) {
+      return c.json({ error: 'Invalid file name' }, 400);
+    }
+    const reportPath = join(absEvoDir, 'reports', file);
+    if (!existsSync(reportPath)) return c.json({ error: 'Report not found' }, 404);
+    const content = readFileSync(reportPath, 'utf-8');
+    return c.json({ file, content });
   });
 
   // ── API: Anti-patterns ──────────────────────────────────────────────
