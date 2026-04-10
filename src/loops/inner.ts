@@ -177,6 +177,41 @@ export async function innerLoop(
     'mutated',
   );
 
+  // 6b. Size guard — reject mutations that change artifact size by more than 50%
+  const originalLen = artifact.content.length;
+  const mutatedLen = updatedContent.length;
+  const sizeRatio = mutatedLen / originalLen;
+  if (sizeRatio > 1.5 || sizeRatio < 0.5) {
+    const sizeDesc = sizeRatio > 1 ? `expanded ${Math.round((sizeRatio - 1) * 100)}%` : `shrunk ${Math.round((1 - sizeRatio) * 100)}%`;
+    const entry: ArchiveEntry = {
+      genid,
+      artifact: artifactId,
+      parent: parent?.genid ?? null,
+      score: baselineScorecard.total_score,
+      max_score: baselineScorecard.max_score,
+      challenge: null,
+      run_id: null,
+      diff,
+      mutation_type: mutationType,
+      mutation_desc: `Rejected: artifact ${sizeDesc} (${originalLen} → ${mutatedLen} chars)`,
+      status: 'regression',
+      timestamp: new Date().toISOString(),
+      token_cost: tokenCost,
+      automated: false,
+    };
+    archive.append(entry);
+    return {
+      genid,
+      artifact: artifactId,
+      score: baselineScorecard.total_score,
+      maxScore: baselineScorecard.max_score,
+      mutationType,
+      status: 'regression',
+      diff,
+      tokenCost,
+    };
+  }
+
   // 7. Dry run — return without applying
   if (options?.dryRun) {
     return {

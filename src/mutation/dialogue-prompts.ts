@@ -191,6 +191,8 @@ ${artifact}
 - Do NOT make any other modifications, improvements, or fixes beyond what the spec describes.
 - Output the COMPLETE updated artifact — the entire file, not just the changed part.
 - Respect all integration constraints.
+- CRITICAL SIZE CONSTRAINT: The updated artifact must be within 30% of the original length. If the spec says REPHRASE or SIMPLIFY, the output should be roughly the same size or smaller. Do NOT expand sections significantly — a "rephrase" that doubles a section's length is a rewrite, not a rephrase.
+- PRESERVE STRUCTURE: Keep all existing headings, sections, and formatting intact unless the spec explicitly says to change them. Only modify the targeted section.
 
 ===UPDATED_ARTIFACT===
 (paste the COMPLETE updated artifact content here)
