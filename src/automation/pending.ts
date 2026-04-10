@@ -10,10 +10,13 @@ import { join } from 'node:path';
 
 // ── Types ────────────────────────────────────────────────────────────────
 
-interface PendingEntry {
+export interface PendingEntry {
   runId: string;
   artifactId: string;
   timestamp: string;
+  error?: string;
+  category?: string;
+  errorPatterns?: string[];
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -35,13 +38,19 @@ function ensurePendingDir(evoDir: string): void {
  * Add a pending evolution run to the queue.
  * Writes a JSON file to `.kultiv/pending/<run-id>.json`.
  */
-export function addPending(evoDir: string, runId: string, artifactId: string): void {
+export function addPending(
+  evoDir: string,
+  runId: string,
+  artifactId: string,
+  errorInfo?: { error?: string; category?: string; errorPatterns?: string[] },
+): void {
   ensurePendingDir(evoDir);
 
   const entry: PendingEntry = {
     runId,
     artifactId,
     timestamp: new Date().toISOString(),
+    ...errorInfo,
   };
 
   const filePath = join(pendingDir(evoDir), `${runId}.json`);
@@ -51,9 +60,7 @@ export function addPending(evoDir: string, runId: string, artifactId: string): v
 /**
  * Get all pending evolution runs, sorted by timestamp (oldest first).
  */
-export function getPending(
-  evoDir: string,
-): Array<{ runId: string; artifactId: string; timestamp: string }> {
+export function getPending(evoDir: string): PendingEntry[] {
   const dir = pendingDir(evoDir);
   if (!existsSync(dir)) return [];
 

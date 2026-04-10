@@ -275,6 +275,57 @@ export async function startDashboard(
     return c.json({ file, content });
   });
 
+  // ── API: Scans ──────────────────────────────────────────────────────
+  app.get('/api/scans', (c) => {
+    const scansPath = join(absEvoDir, 'scans');
+    if (!existsSync(scansPath)) return c.json([]);
+
+    try {
+      const files = readdirSync(scansPath).filter((f) => f.endsWith('.json'));
+      const scans = files.map((f) => {
+        try {
+          return JSON.parse(readFileSync(join(scansPath, f), 'utf-8'));
+        } catch {
+          return null;
+        }
+      }).filter(Boolean);
+      return c.json(scans);
+    } catch {
+      return c.json([]);
+    }
+  });
+
+  app.get('/api/scans/:id', (c) => {
+    const id = c.req.param('id');
+    const scanFile = join(absEvoDir, 'scans', `${id}.json`);
+    if (!existsSync(scanFile)) return c.json({ error: 'Scan not found' }, 404);
+    try {
+      return c.json(JSON.parse(readFileSync(scanFile, 'utf-8')));
+    } catch {
+      return c.json({ error: 'Failed to read scan' }, 500);
+    }
+  });
+
+  // ── API: Pending Failures ──────────────────────────────────────────
+  app.get('/api/pending', (c) => {
+    const pendingPath = join(absEvoDir, 'pending');
+    if (!existsSync(pendingPath)) return c.json([]);
+
+    try {
+      const files = readdirSync(pendingPath).filter((f) => f.endsWith('.json'));
+      const entries = files.map((f) => {
+        try {
+          return JSON.parse(readFileSync(join(pendingPath, f), 'utf-8'));
+        } catch {
+          return null;
+        }
+      }).filter(Boolean);
+      return c.json(entries);
+    } catch {
+      return c.json([]);
+    }
+  });
+
   // ── API: Anti-patterns ──────────────────────────────────────────────
   app.get('/api/anti-patterns', (c) => {
     const archive = getArchive(absEvoDir);

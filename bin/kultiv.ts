@@ -230,6 +230,89 @@ program
     }
   });
 
+// ── scan ────────────────────────────────────────────────────────────────
+
+program
+  .command('scan')
+  .description('Analyze agent prompts for purpose, structure, and improvement opportunities')
+  .option('-a, --artifact <id>', 'specific artifact to scan')
+  .option('-f, --file <path>', 'scan any file directly (no config needed)')
+  .action(async (opts, cmd) => {
+    const { scanArtifact, saveScanAnalysis } = await import('../src/mutation/scan.js');
+
+    if (opts.file) {
+      // Scan a standalone file
+      const filePath = resolve(opts.file);
+      let content: string;
+      try {
+        content = readFileSync(filePath, 'utf-8');
+      } catch {
+        console.error(red(`File not found: ${filePath}`));
+        process.exit(1);
+      }
+      const configPath = resolveConfigPath(cmd.optsWithGlobals());
+      const config = loadConfig(configPath);
+      const provider = createProvider(config.llm);
+      const artifactId = opts.file.replace(/[^a-zA-Z0-9-]/g, '-').replace(/-+/g, '-');
+
+      console.log(`\nScanning ${bold(filePath)}...`);
+      const analysis = await scanArtifact(content, artifactId, provider);
+      printScanAnalysis(analysis);
+      return;
+    }
+
+    const configPath = resolveConfigPath(cmd.optsWithGlobals());
+    const config = loadConfig(configPath);
+    const provider = createProvider(config.llm);
+    const kultivDir = resolveKultivDir();
+
+    const artifactIds = opts.artifact
+      ? [opts.artifact]
+      : Object.keys(config.artifacts);
+
+    for (const id of artifactIds) {
+      const artifactConfig = config.artifacts[id];
+      if (!artifactConfig) {
+        console.error(red(`Artifact "${id}" not found in config`));
+        continue;
+      }
+
+      const artifact = loadArtifact(id, artifactConfig);
+      console.log(`\nScanning ${bold(id)}...`);
+
+      try {
+        const analysis = await scanArtifact(artifact.content, id, provider);
+        saveScanAnalysis(kultivDir, analysis);
+        printScanAnalysis(analysis);
+        console.log(dim(`  Saved to .kultiv/scans/${id}.json`));
+      } catch (err) {
+        console.error(red(`  Error scanning ${id}: ${String(err)}`));
+      }
+    }
+  });
+
+function printScanAnalysis(analysis: { purpose: string; domain: string; sections: Array<{ name: string; lineCount: number; assessment: string }>; recommendations: Array<{ type: string; target: string; rationale: string; priority: string }>; hasExamples: boolean; hasNegativeExamples: boolean; hasDecisionTrees: boolean }): void {
+  console.log(`  ${bold('Purpose:')} ${analysis.purpose}`);
+  console.log(`  ${bold('Domain:')} ${analysis.domain}`);
+  console.log(`  ${bold('Features:')} examples=${analysis.hasExamples ? green('yes') : red('no')} negative=${analysis.hasNegativeExamples ? green('yes') : red('no')} decision-trees=${analysis.hasDecisionTrees ? green('yes') : red('no')}`);
+
+  if (analysis.sections.length > 0) {
+    console.log(`\n  ${bold('Sections:')}`);
+    for (const s of analysis.sections) {
+      console.log(`    ${s.name} (${s.lineCount} lines) — ${s.assessment}`);
+    }
+  }
+
+  if (analysis.recommendations.length > 0) {
+    console.log(`\n  ${bold('Recommendations:')}`);
+    for (const r of analysis.recommendations) {
+      const color = r.priority === 'high' ? red : r.priority === 'medium' ? yellow : dim;
+      console.log(`    ${color(`[${r.priority}]`)} ${bold(r.type)}: ${r.target}`);
+      console.log(`      ${r.rationale}`);
+    }
+  }
+}
+
 // ── run ─────────────────────────────────────────────────────────────────
 
 program

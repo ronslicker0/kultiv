@@ -244,10 +244,15 @@ function LineChart({series,width=600,height=200}){
 // ── Insights Panel ──────────────────────────────────────────────────
 function InsightsPanel(){
   const[data,setData]=useState(null);
+  const[pending,setPending]=useState([]);
+  const[scans,setScans]=useState([]);
   const[reportContent,setReportContent]=useState(null);
+  const[expandedScan,setExpandedScan]=useState(null);
   const load=useCallback(async()=>{
-    const d=await api('insights');
+    const[d,p,s]=await Promise.all([api('insights'),api('pending'),api('scans')]);
     if(!d.error)setData(d);
+    if(!p.error)setPending(p);
+    if(!s.error)setScans(s);
   },[]);
   useEffect(()=>{load();const t=setInterval(load,15000);return()=>clearInterval(t)},[load]);
 
@@ -261,10 +266,40 @@ function InsightsPanel(){
   const{insights,reports}=data;
   const needsAttention=insights.filter(i=>i.weak_criteria.length>0||i.is_plateaued);
   const recentSuccesses=insights.filter(i=>i.last_success);
+  const hasContent=needsAttention.length>0||recentSuccesses.length>0||(reports&&reports.length>0)||pending.length>0||scans.length>0;
 
-  if(needsAttention.length===0&&recentSuccesses.length===0&&(!reports||reports.length===0))return null;
+  if(!hasContent)return null;
 
   return html\`<div>
+    \${pending.length>0?html\`<div class="panel mt" style="border-color:rgba(239,68,68,.4)">
+      <h3 style="color:var(--red);margin-bottom:12px">Pending Failures (\${pending.length})</h3>
+      <div style="font-size:12px;color:var(--text2);margin-bottom:8px">Real production errors queued for evolution. These will feed into the next mutation cycle.</div>
+      <table style="font-size:13px">
+        <tr><th style="padding:4px 8px">Agent</th><th style="padding:4px 8px">Category</th><th style="padding:4px 8px">Error</th></tr>
+        \${pending.map(p=>html\`<tr>
+          <td style="padding:4px 8px;font-weight:600">\${p.artifactId||'unknown'}</td>
+          <td style="padding:4px 8px"><span class="badge regression">\${p.category||'UNKNOWN'}</span></td>
+          <td style="padding:4px 8px;max-width:500px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title=\${p.error||''}>\${(p.error||'No description').slice(0,120)}</td>
+        </tr>\`)}
+      </table>
+    </div>\`:null}
+    \${scans.length>0?html\`<div class="panel mt" style="border-color:rgba(96,165,250,.4)">
+      <h3 style="color:var(--blue);margin-bottom:12px">Agent Scans (\${scans.length})</h3>
+      <div style="font-size:12px;color:var(--text2);margin-bottom:8px">Structural analysis from kultiv scan. Recommendations feed into evolution automatically.</div>
+      \${scans.map(s=>html\`<div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--border)">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;cursor:pointer" onclick=\${()=>setExpandedScan(expandedScan===s.artifactId?null:s.artifactId)}>
+          <span style="font-weight:700">\${s.artifactId}</span>
+          <span style="color:var(--text2);font-size:12px">\${s.domain}</span>
+          <span style="font-size:12px;color:var(--text2)">\${s.hasExamples?'examples':'no examples'} | \${s.hasNegativeExamples?'anti-patterns':'no anti-patterns'} | \${s.hasDecisionTrees?'decision trees':'no decision trees'}</span>
+        </div>
+        <div style="font-size:13px;color:var(--text2);margin-bottom:4px">\${s.purpose}</div>
+        \${expandedScan===s.artifactId&&s.recommendations&&s.recommendations.length>0?html\`<div style="margin-top:8px">
+          \${s.recommendations.map(r=>html\`<div style="font-size:12px;margin:4px 0;padding:4px 8px;border-left:2px solid \${r.priority==='high'?'var(--red)':r.priority==='medium'?'var(--yellow)':'var(--text2)'}">
+            <span style="font-weight:600;color:\${r.priority==='high'?'var(--red)':'var(--yellow)'}">\${r.type}</span> \${r.target} — <span style="color:var(--text2)">\${r.rationale}</span>
+          </div>\`)}
+        </div>\`:null}
+      </div>\`)}
+    </div>\`:null}
     \${needsAttention.length>0?html\`<div class="panel mt" style="border-color:rgba(234,179,8,.4)">
       <h3 style="color:var(--yellow);margin-bottom:12px">Improvement Suggestions</h3>
       \${needsAttention.map(i=>html\`<div style="margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--border)">

@@ -75,7 +75,9 @@ my-agent: 91/100 (91%)
 - **Tests that cost nothing** -- run your existing test suites, linters, and compilers as scorers
 - **Knows when it's stuck** -- detects plateaus, type fixation, overfitting, and bloat. Generates improvement reports identifying the weakest criteria and what the next tier requires
 - **Improves how it improves** -- a second evolution loop rewrites the mutation strategy based on what's actually working
-- **Insights dashboard** -- built-in web dashboard at localhost:4200 shows scores, per-criterion breakdowns, improvement suggestions, and mutation history
+- **Diagnostic mutations** -- feeds real production failures from `.kultiv/pending/` into the mutation engine so it fixes what actually broke, not what it guesses might be wrong
+- **Agent scanning** -- `kultiv scan` analyzes any prompt for purpose, structure, and improvement opportunities (trim, expand, combine, split, add examples)
+- **Insights dashboard** -- built-in web dashboard at localhost:4200 shows scores, per-criterion breakdowns, pending failures, scan analyses, and mutation history
 - **Runs while you sleep** -- hook into Claude Code post-session events or schedule via cron/Task Scheduler
 - **Works with Anthropic, OpenAI, Ollama, Claude Code** -- bring your own provider and model
 
@@ -95,9 +97,32 @@ my-agent: 91/100 (91%)
 | `kultiv resume` | Resume a paused session |
 | `kultiv daemon start` | Start the background automation daemon |
 | `kultiv daemon stop` | Stop the daemon |
+| `kultiv scan` | Analyze agent prompts for purpose, structure, and recommendations |
 | `kultiv dashboard` | Open the web dashboard at localhost:4200 |
 
 All commands accept `-c, --config <path>` to use a custom config file (defaults to `.kultiv/config.yaml`).
+
+### Agent Scanning
+
+Scan any agent prompt to understand its purpose, structure, and where it can be improved:
+
+```bash
+kultiv scan --artifact my-agent     # scan a registered artifact
+kultiv scan --file ./prompts/qa.md  # scan any file directly
+kultiv scan                         # scan all registered artifacts
+```
+
+The scan produces a structural analysis with:
+- **Purpose and domain** -- what the agent is designed to do
+- **Section breakdown** -- each section with line count and quality assessment
+- **Recommendations** -- trim, expand, combine, split, restructure, or add examples (with priority)
+- **Feature flags** -- whether the prompt includes examples, negative examples, and decision trees
+
+Scan results are saved to `.kultiv/scans/` and automatically fed into the mutation engine during evolution.
+
+### Diagnostic Mutations
+
+When your agents fail in production, capture those failures in `.kultiv/pending/` (the hook pipeline does this automatically). During evolution, kultiv loads the 5 most recent failures for each artifact and includes them in the mutation context. The mutation LLM sees exactly what went wrong and proposes fixes that target real problems.
 
 ## Configuration
 
@@ -333,7 +358,7 @@ kultiv init --preset nextjs
 src/
   core/           config, archive (JSONL + per-criterion checks), artifact reader, trace store
   scoring/        chain runner, command scorer, pattern scorer (require/forbid), LLM judge (sum-based)
-  mutation/       4-round dialogue engine, single-call fallback, apply/revert
+  mutation/       4-round dialogue engine, single-call fallback, agent scanner, apply/revert
   detection/      plateau + anti-pattern heuristics (zero LLM tokens)
   loops/          inner loop (mutate/score), outer loop (meta-strategy), improvement reports
   automation/     cron daemon, hook trigger, pending queue, lockfile
@@ -353,10 +378,13 @@ templates/
 
 ```
 Artifact  -->  Score (evaluator chain)  -->  Baseline + per-criterion breakdown
-    |
-    v
-4-round dialogue (sees rubric + weak criteria)  -->  Targeted mutation
-    |
+    |                                              |
+    v                                              v
+4-round dialogue (sees rubric + weak criteria + failures + scan)  -->  Targeted mutation
+    |          ^                    ^
+    |          |                    |
+    |    .kultiv/pending/     .kultiv/scans/
+    |    (real failures)      (agent analysis)
     v
 Apply tweak  -->  Re-score  -->  Compare
     |                               |

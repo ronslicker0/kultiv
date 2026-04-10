@@ -1,7 +1,7 @@
 import type { LLMProvider } from '../llm/provider.js';
 import type { Scorecard } from '../scoring/chain-runner.js';
 import type { ArchiveEntry } from '../core/archive.js';
-import type { MutationResult, MutationOutput } from './types.js';
+import type { MutationResult, MutationOutput, FailureContext, ScanAnalysis } from './types.js';
 
 // ── Mutation Context ────────────────────────────────────────────────────
 
@@ -15,6 +15,10 @@ export interface MutationContext {
   rubricContent?: string;
   /** Per-criterion breakdown from last scoring run */
   scorecardChecks?: Array<{ name: string; score: number; max: number; note?: string }>;
+  /** Real production failures this agent caused */
+  failureContext?: FailureContext;
+  /** Structural analysis from kultiv scan */
+  scanAnalysis?: ScanAnalysis;
 }
 
 // ── Single-Call Mutation Proposer ────────────────────────────────────────
@@ -87,9 +91,10 @@ ${scorecardBlock}
 
 ## Recent Archive History (last ${context.archiveHistory.length})
 ${historyBlock}
-
+${buildFailureBlock(context)}${buildScanBlock(context)}
 ## Task
 Analyze the artifact and scorecard. Propose ONE mutation that will improve the score.
+${context.failureContext ? '- If production failures are listed above, prioritize mutations that directly address those failure patterns.\n' : ''}
 Follow the meta-strategy's priority order and diversity rules.
 
 Use this EXACT format — a JSON block followed by the full updated artifact after a separator:
@@ -109,6 +114,24 @@ Use this EXACT format — a JSON block followed by the full updated artifact aft
 ===UPDATED_ARTIFACT===
 (paste the COMPLETE updated artifact content here — the entire file, not just the changed part)
 ===END_ARTIFACT===`;
+}
+
+// ── Context Block Builders ──────────────────────────────────────────────
+
+function buildFailureBlock(context: MutationContext): string {
+  if (!context.failureContext || context.failureContext.recentErrors.length === 0) return '';
+  const errors = context.failureContext.recentErrors
+    .map((e) => `- [${e.category}] ${e.error}${e.errorPatterns?.length ? ` (patterns: ${e.errorPatterns.join(', ')})` : ''}`)
+    .join('\n');
+  return `\n## Recent Production Failures\nThese are real errors this agent caused in production. Prioritize fixes for these:\n${errors}\n`;
+}
+
+function buildScanBlock(context: MutationContext): string {
+  if (!context.scanAnalysis) return '';
+  const recs = context.scanAnalysis.recommendations
+    .map((r) => `- [${r.priority}] ${r.type}: ${r.target} — ${r.rationale}`)
+    .join('\n');
+  return `\n## Agent Analysis\nPurpose: ${context.scanAnalysis.purpose}\nDomain: ${context.scanAnalysis.domain}\n\n### Recommendations\n${recs}\n`;
 }
 
 // ── Output Parser ───────────────────────────────────────────────────────

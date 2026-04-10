@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { resolve, join } from 'node:path';
 import { createPatch } from 'diff';
 import type { EvoConfig } from '../core/config.js';
 import { Archive, type ArchiveEntry, type ScorecardCheck } from '../core/archive.js';
@@ -7,6 +7,8 @@ import { loadArtifact } from '../core/artifact.js';
 import type { LLMProvider } from '../llm/provider.js';
 import { proposeMutation, type MutationContext } from '../mutation/single-call.js';
 import { proposeDialogueMutation } from '../mutation/dialogue.js';
+import type { FailureContext } from '../mutation/types.js';
+import { loadScanAnalysis } from '../mutation/scan.js';
 import { applyMutation, revertMutation, cleanupBackup } from '../mutation/apply.js';
 import { runChain, type Scorecard } from '../scoring/chain-runner.js';
 import {
@@ -57,6 +59,48 @@ function extractScorecardChecks(scorecard: Scorecard): ScorecardCheck[] {
     }
   }
   return checks;
+}
+
+/**
+ * Load failure context from .kultiv/pending/ for a specific artifact.
+ * Returns up to 5 most recent errors that have error data.
+ */
+function loadFailureContext(projectRoot: string, artifactId: string): FailureContext | undefined {
+  const pendingDir = join(projectRoot, '.kultiv', 'pending');
+  if (!existsSync(pendingDir)) return undefined;
+
+  let files: string[];
+  try {
+    files = readdirSync(pendingDir).filter((f) => f.endsWith('.json'));
+  } catch {
+    return undefined;
+  }
+
+  const errors: FailureContext['recentErrors'] = [];
+  for (const file of files) {
+    try {
+      const raw = readFileSync(join(pendingDir, file), 'utf-8');
+      const entry = JSON.parse(raw) as Record<string, unknown>;
+      if (entry.artifactId === artifactId && typeof entry.error === 'string') {
+        errors.push({
+          error: entry.error as string,
+          category: String(entry.category ?? 'UNKNOWN'),
+          timestamp: String(entry.timestamp ?? ''),
+          errorPatterns: Array.isArray(entry.errorPatterns)
+            ? (entry.errorPatterns as unknown[]).map(String)
+            : undefined,
+        });
+      }
+    } catch {
+      // Skip malformed files
+    }
+  }
+
+  if (errors.length === 0) return undefined;
+
+  // Sort by timestamp descending, take 5 most recent
+  errors.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  return { recentErrors: errors.slice(0, 5) };
 }
 
 // ── Inner Loop ──────────────────────────────────────────────────────────
@@ -144,6 +188,13 @@ export async function innerLoop(
   // Extract per-criterion checks from baseline scorecard
   const baselineChecks = extractScorecardChecks(baselineScorecard);
 
+  // Load failure context from pending files (real production errors)
+  const failureContext = loadFailureContext(projectRoot, artifactId);
+
+  // Load scan analysis if available
+  const kultivDir = resolve(projectRoot, '.kultiv');
+  const scanAnalysis = loadScanAnalysis(kultivDir, artifactId);
+
   const context: MutationContext = {
     artifact: artifact.content,
     artifactType: artifact.type,
@@ -152,6 +203,8 @@ export async function innerLoop(
     metaStrategy,
     rubricContent,
     scorecardChecks: baselineChecks.length > 0 ? baselineChecks : undefined,
+    failureContext,
+    scanAnalysis,
   };
 
   // 6. Propose mutation

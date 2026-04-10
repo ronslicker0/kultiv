@@ -52,7 +52,7 @@ ${context.artifact}
 ${scorecardBlock}
 ${checksBlock ? `\n### Per-Criterion Breakdown\n${checksBlock}` : ''}
 ${rubricBlock}
-## Recent Archive History (last ${context.archiveHistory.length})
+${buildFailureSection(context)}${buildScanSection(context)}## Recent Archive History (last ${context.archiveHistory.length})
 ${historyBlock}
 
 ## Task: EXPLORE
@@ -60,7 +60,7 @@ ${historyBlock}
 Analyze the artifact and scorecard. Brainstorm 3-5 candidate improvements. Each candidate MUST use a DIFFERENT mutation type. Consider:
 - Which SPECIFIC CRITERIA are scoring lowest? Target those first.
 - Read the rubric tier descriptions — what does the NEXT tier up require?
-- What mutation types from the meta-strategy priority order fit best?
+${context.failureContext ? '- PRIORITY: At least ONE candidate MUST directly address a production failure pattern listed above.\n' : ''}- What mutation types from the meta-strategy priority order fit best?
 - What is the regression risk of each candidate?
 - Avoid repeating mutation types from recent history unless strongly justified.
 - CRITICAL: Do NOT restructure or reorder the artifact unless a criterion specifically requires it. Prefer ADD_RULE or ADD_EXAMPLE that inject new content into the existing structure without disrupting what already works.
@@ -197,4 +197,23 @@ ${artifact}
 ===UPDATED_ARTIFACT===
 (paste the COMPLETE updated artifact content here)
 ===END_ARTIFACT===`;
+}
+
+// ── Context Section Builders ────────────────────────────────────────────
+
+function buildFailureSection(context: MutationContext): string {
+  if (!context.failureContext || context.failureContext.recentErrors.length === 0) return '';
+  const errors = context.failureContext.recentErrors
+    .map((e) => `- **[${e.category}]** ${e.error}${e.errorPatterns?.length ? `\n  Patterns: ${e.errorPatterns.join(', ')}` : ''}`)
+    .join('\n');
+  return `## Recent Production Failures\nThese are real errors this agent caused in production. Mutations should fix these:\n${errors}\n\n`;
+}
+
+function buildScanSection(context: MutationContext): string {
+  if (!context.scanAnalysis) return '';
+  const recs = context.scanAnalysis.recommendations
+    .filter((r) => r.priority !== 'low')
+    .map((r) => `- [${r.priority}] **${r.type}**: ${r.target} — ${r.rationale}`)
+    .join('\n');
+  return `## Agent Analysis (from kultiv scan)\nPurpose: ${context.scanAnalysis.purpose}\nDomain: ${context.scanAnalysis.domain}\n${recs ? `\n### Recommendations\n${recs}\n` : ''}\n`;
 }

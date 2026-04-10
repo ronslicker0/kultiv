@@ -69,3 +69,33 @@ export interface DialogueTrace {
   total_input_tokens: number;
   total_output_tokens: number;
 }
+
+// ── Failure Context ─────────────────────────────────────────────────────
+
+export interface FailureContext {
+  recentErrors: Array<{
+    error: string;
+    category: string;
+    timestamp: string;
+    errorPatterns?: string[];
+  }>;
+}
+
+// ── Scan Analysis ───────────────────────────────────────────────────────
+
+export interface ScanAnalysis {
+  artifactId: string;
+  scannedAt: string;
+  purpose: string;
+  domain: string;
+  sections: Array<{ name: string; lineCount: number; assessment: string }>;
+  recommendations: Array<{
+    type: 'trim' | 'expand' | 'combine' | 'split' | 'restructure' | 'add_examples';
+    target: string;
+    rationale: string;
+    priority: 'low' | 'medium' | 'high';
+  }>;
+  hasExamples: boolean;
+  hasNegativeExamples: boolean;
+  hasDecisionTrees: boolean;
+}
