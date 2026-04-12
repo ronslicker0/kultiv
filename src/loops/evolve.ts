@@ -5,6 +5,7 @@ import { Archive, type ArchiveEntry } from '../core/archive.js';
 import { createProvider } from '../llm/factory.js';
 import { innerLoop, type InnerLoopResult } from './inner.js';
 import { outerLoop } from './outer.js';
+import { runDeterministicFeedback, runLLMReflection } from './feedback.js';
 import { detectAntiPatterns } from '../detection/anti-patterns.js';
 import { detectPlateau } from '../detection/plateau.js';
 
@@ -384,15 +385,37 @@ export async function evolve(
       break;
     }
 
-    // Feedback check every N runs
-    if ((i + 1) % feedbackInterval === 0) {
-      const allEntries = archive.getAll() as ArchiveEntry[];
-      const patterns = detectAntiPatterns(allEntries, artifactId);
-      if (patterns.length > 0) {
+    // Deterministic feedback every N runs
+    if ((i + 1) % config.feedback.deterministic_interval === 0) {
+      const feedbackResult = await runDeterministicFeedback(archive, artifactId);
+      if (feedbackResult.antiPatterns.length > 0) {
         console.log(yellow('\n  Anti-patterns detected:'));
-        for (const p of patterns) {
+        for (const p of feedbackResult.antiPatterns) {
           const icon = p.severity === 'high' ? red('!!') : yellow('!!');
           console.log(`    ${icon} ${p.type}: ${p.message}`);
+        }
+        console.log('');
+      }
+      if (feedbackResult.strategyAdjustments.length > 0) {
+        console.log(dim('  Strategy adjustments suggested:'));
+        for (const adj of feedbackResult.strategyAdjustments) {
+          console.log(dim(`    - ${adj}`));
+        }
+        console.log('');
+      }
+    }
+
+    // LLM reflection every M runs (if enabled)
+    if (
+      config.feedback.llm_reflection_enabled &&
+      (i + 1) % config.feedback.llm_reflection_interval === 0 &&
+      !options?.dryRun
+    ) {
+      const reflectionResult = await runLLMReflection(archive, artifactId, provider);
+      if (reflectionResult.llmInsights.length > 0) {
+        console.log(cyan('\n  LLM Reflection insights:'));
+        for (const insight of reflectionResult.llmInsights) {
+          console.log(dim(`    - ${insight}`));
         }
         console.log('');
       }
@@ -413,7 +436,10 @@ export async function evolve(
         console.log(dim('\n  Running outer loop (meta-strategy revision)...'));
       }
 
-      const outerResult = await outerLoop(config, archive, provider);
+      const outerResult = await outerLoop(config, archive, provider, {
+        mode: config.outer_loop.mode,
+        validationBatchSize: config.outer_loop.validation_batch_size,
+      });
       outerLoopRan = true;
       totalTokenCost += outerResult.tokenCost;
 

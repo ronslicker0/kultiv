@@ -13,6 +13,7 @@ import {
   parseCritiqueResponse,
   parseSpecifyResponse,
   parseGenerateResponse,
+  parseGenerateResponseMulti,
   DialogueParseError,
 } from './dialogue-parser.js';
 
@@ -28,6 +29,7 @@ import {
 export async function proposeDialogueMutation(
   context: MutationContext,
   provider: LLMProvider,
+  options?: { beamWidth?: number },
 ): Promise<MutationResult> {
   const messages: LLMMessage[] = [];
   let totalInputTokens = 0;
@@ -51,7 +53,7 @@ export async function proposeDialogueMutation(
     const candidates: ExploreCandidate[] = parseExploreResponse(exploreResponse.content);
 
     // ── Round 2: Critique ─────────────────────────────────────────────
-    const critiquePrompt = buildCritiquePrompt(candidates);
+    const critiquePrompt = buildCritiquePrompt(candidates, context.scorecard, context.archiveHistory);
     messages.push({ role: 'user', content: critiquePrompt });
 
     const critiqueResponse = await provider.generate(messages, {
@@ -85,18 +87,27 @@ export async function proposeDialogueMutation(
     const spec: SpecifyOutput = parseSpecifyResponse(specifyResponse.content);
 
     // ── Round 4: Generate ─────────────────────────────────────────────
-    const generatePrompt = buildGeneratePrompt(spec, context.artifact);
+    const beamWidth = options?.beamWidth ?? 1;
+    const generatePrompt = buildGeneratePrompt(spec, context.artifact, beamWidth);
     messages.push({ role: 'user', content: generatePrompt });
 
     const generateResponse = await provider.generate(messages, {
-      temperature: 0.2,
-      maxTokens: 8192,
+      temperature: beamWidth > 1 ? 0.7 : 0.2,
+      maxTokens: beamWidth > 1 ? 8192 * beamWidth : 8192,
     });
     totalInputTokens += generateResponse.input_tokens;
     totalOutputTokens += generateResponse.output_tokens;
     roundsCompleted = 4;
 
-    const updatedArtifact = parseGenerateResponse(generateResponse.content);
+    let updatedArtifact: string;
+    let variants: string[] | undefined;
+
+    if (beamWidth > 1) {
+      variants = parseGenerateResponseMulti(generateResponse.content, beamWidth);
+      updatedArtifact = variants[0];
+    } else {
+      updatedArtifact = parseGenerateResponse(generateResponse.content);
+    }
 
     // ── Build diagnosis from dialogue reasoning ───────────────────────
     const candidateSummary = candidates
@@ -118,6 +129,8 @@ export async function proposeDialogueMutation(
       rounds_completed: roundsCompleted,
       total_input_tokens: totalInputTokens,
       total_output_tokens: totalOutputTokens,
+      beam_variants_count: variants ? variants.length : undefined,
+      selected_variant_index: variants ? 0 : undefined,
     };
 
     return {
@@ -137,6 +150,7 @@ export async function proposeDialogueMutation(
       input_tokens: totalInputTokens,
       output_tokens: totalOutputTokens,
       dialogue_trace: trace,
+      variants,
     };
   } catch (err) {
     // Fallback to single-call on any dialogue failure

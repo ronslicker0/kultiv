@@ -7,7 +7,7 @@ import { loadArtifact } from '../core/artifact.js';
 import type { LLMProvider } from '../llm/provider.js';
 import { proposeMutation, type MutationContext } from '../mutation/single-call.js';
 import { proposeDialogueMutation } from '../mutation/dialogue.js';
-import type { FailureContext } from '../mutation/types.js';
+import type { FailureContext, Challenge, SpecifyOutput } from '../mutation/types.js';
 import { loadScanAnalysis } from '../mutation/scan.js';
 import { applyMutation, revertMutation, cleanupBackup } from '../mutation/apply.js';
 import { runChain, type Scorecard } from '../scoring/chain-runner.js';
@@ -21,6 +21,11 @@ import {
   returnToBaseBranch,
   type GitSafetyContext,
 } from '../safety/git.js';
+import { selectParent } from '../selection/parent.js';
+import { selectChallenge } from '../selection/challenge.js';
+import { loadChallenges } from '../challenges/loader.js';
+import { verifySemantic } from '../guards/semantic-diff.js';
+import { crossValidate, detectRegression } from '../scoring/cross-validator.js';
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -111,16 +116,20 @@ function loadFailureContext(projectRoot: string, artifactId: string): FailureCon
  * Flow:
  * 1. Load artifact from config
  * 2. Read meta-strategy
- * 3. Select parent from archive (best-scoring entry)
- * 4. Run scoring chain for baseline
- * 5. Build mutation context with artifact, scorecard, history
- * 6. Propose mutation via LLM
- * 7. If dry run: return without applying
- * 8. Apply mutation to artifact file
- * 9. Score the mutated artifact
- * 10. Compare: keep if improved/neutral, revert if regression
- * 11. Log to archive
- * 12. Return result
+ * 3. Select parent from archive (tournament or greedy)
+ * 4. Select challenge (if challenges exist)
+ * 5. Run scoring chain for baseline
+ * 6. Build mutation context with artifact, scorecard, history
+ * 7. Propose mutation via LLM (with beam search if beam_width > 1)
+ * 8. Size guard — reject oversized mutations
+ * 9. Semantic diff guard — verify mutation scope
+ * 10. If dry run: return without applying
+ * 11. Apply mutation to artifact file
+ * 12. Score the mutated artifact
+ * 13. Compare: keep if improved/neutral, revert if regression
+ * 14. Cross-validate against other challenges
+ * 15. Log to archive
+ * 16. Return result
  */
 export async function innerLoop(
   config: EvoConfig,
@@ -148,15 +157,31 @@ export async function innerLoop(
     metaStrategy = '(no meta-strategy file found — using default behavior)';
   }
 
-  // 3. Select parent (best-scoring entry for this artifact)
+  // 3. Select parent (tournament or greedy based on config)
   const parentEntries = archive.getByArtifact(artifactId).filter((e) => e.score !== null);
-  const parent = parentEntries.length > 0
-    ? parentEntries.reduce((best, e) =>
-        (e.score ?? 0) > (best.score ?? 0) ? e : best
-      )
-    : null;
+  const selectionConfig = config.evolution.selection;
+  const parent = selectParent(
+    parentEntries,
+    selectionConfig.parent_method,
+    selectionConfig.parent_temperature,
+    archive.getByArtifact(artifactId).slice(-5).map(e => e.genid),
+  );
 
-  // 4. Run scoring chain for baseline
+  // 4. Challenge selection
+  const challengesDir = resolve(projectRoot, '.kultiv', 'challenges', artifactId);
+  const challenges = existsSync(challengesDir) ? loadChallenges(challengesDir) : [];
+  let selectedChallenge: Challenge | null = null;
+  if (challenges.length > 0) {
+    selectedChallenge = selectChallenge(
+      challenges,
+      archive,
+      artifactId,
+      selectionConfig.challenge_method,
+      genid,
+    );
+  }
+
+  // 5. Run scoring chain for baseline
   const chainOptions = {
     provider,
     artifactContent: artifact.content,
@@ -169,7 +194,7 @@ export async function innerLoop(
     return makeCrashResult(genid, artifactId, archive, err);
   }
 
-  // 5. Build mutation context
+  // 6. Build mutation context
   const archiveHistory = archive.getByArtifact(artifactId).slice(-5);
 
   // Load rubric content so the mutation LLM knows what the judge scores on
@@ -207,11 +232,11 @@ export async function innerLoop(
     scanAnalysis,
   };
 
-  // 6. Propose mutation
+  // 7. Propose mutation (with beam search support)
   let mutationResult;
   try {
     mutationResult = config.evolution.mutation_mode === 'dialogue'
-      ? await proposeDialogueMutation(context, provider)
+      ? await proposeDialogueMutation(context, provider, { beamWidth: config.evolution.beam_width })
       : await proposeMutation(context, provider);
   } catch (err) {
     return makeCrashResult(genid, artifactId, archive, err);
@@ -219,7 +244,32 @@ export async function innerLoop(
 
   const tokenCost = mutationResult.input_tokens + mutationResult.output_tokens;
   const mutationType = mutationResult.output.mutation_type;
-  const updatedContent = mutationResult.output.updated_artifact;
+  let updatedContent = mutationResult.output.updated_artifact;
+
+  // 7b. Beam search: if multiple variants, score each and pick the best
+  if (mutationResult.variants && mutationResult.variants.length > 1) {
+    let bestVariantIdx = 0;
+    let bestVariantScore = -Infinity;
+    for (let vi = 0; vi < mutationResult.variants.length; vi++) {
+      try {
+        const variantScorecard = await runChain(artifactConfig.scorer.chain, projectRoot, {
+          provider, artifactContent: mutationResult.variants[vi], artifactPath: artifact.path,
+        });
+        if (variantScorecard.total_score > bestVariantScore) {
+          bestVariantScore = variantScorecard.total_score;
+          bestVariantIdx = vi;
+        }
+      } catch {
+        // Skip variants that fail to score
+      }
+    }
+    // Use the best variant
+    updatedContent = mutationResult.variants[bestVariantIdx];
+    // Update mutation result metadata
+    if (mutationResult.dialogue_trace) {
+      mutationResult.dialogue_trace.selected_variant_index = bestVariantIdx;
+    }
+  }
 
   // Compute diff
   const diff = createPatch(
@@ -230,7 +280,7 @@ export async function innerLoop(
     'mutated',
   );
 
-  // 6b. Size guard — reject mutations that change artifact size by more than 50%
+  // 8. Size guard — reject mutations that change artifact size by more than 50%
   const originalLen = artifact.content.length;
   const mutatedLen = updatedContent.length;
   const sizeRatio = mutatedLen / originalLen;
@@ -242,7 +292,7 @@ export async function innerLoop(
       parent: parent?.genid ?? null,
       score: baselineScorecard.total_score,
       max_score: baselineScorecard.max_score,
-      challenge: null,
+      challenge: selectedChallenge?.id ?? null,
       run_id: null,
       diff,
       mutation_type: mutationType,
@@ -265,7 +315,50 @@ export async function innerLoop(
     };
   }
 
-  // 7. Dry run — return without applying
+  // 9. Semantic diff guard — verify mutation scope when in dialogue mode
+  if (config.evolution.mutation_mode === 'dialogue' && mutationResult.dialogue_trace) {
+    const spec: SpecifyOutput = {
+      mutation_type: mutationResult.output.mutation_type,
+      target_section: mutationResult.output.target_section,
+      action: mutationResult.output.action,
+      content_spec: mutationResult.output.content,
+      integration_constraints: [],
+      expected_score_deltas: {},
+    };
+    const semanticResult = await verifySemantic(artifact.content, updatedContent, spec, provider);
+    if (!semanticResult.passed) {
+      const entry: ArchiveEntry = {
+        genid,
+        artifact: artifactId,
+        parent: parent?.genid ?? null,
+        score: baselineScorecard.total_score,
+        max_score: baselineScorecard.max_score,
+        challenge: selectedChallenge?.id ?? null,
+        run_id: null,
+        diff,
+        mutation_type: mutationType,
+        mutation_desc: `Semantic guard: ${semanticResult.violations.join('; ')}`,
+        status: 'regression',
+        timestamp: new Date().toISOString(),
+        token_cost: tokenCost,
+        automated: false,
+        ...(mutationResult.dialogue_trace ? { dialogue_trace: mutationResult.dialogue_trace } : {}),
+      };
+      archive.append(entry);
+      return {
+        genid,
+        artifact: artifactId,
+        score: baselineScorecard.total_score,
+        maxScore: baselineScorecard.max_score,
+        mutationType,
+        status: 'regression',
+        diff,
+        tokenCost,
+      };
+    }
+  }
+
+  // 10. Dry run — return without applying
   if (options?.dryRun) {
     return {
       genid,
@@ -279,7 +372,7 @@ export async function innerLoop(
     };
   }
 
-  // 7b. Git safety — create experiment branch if enabled
+  // 10b. Git safety — create experiment branch if enabled
   const useGitSafety = options?.safe && isGitRepo(projectRoot);
   let gitCtx: GitSafetyContext | null = null;
 
@@ -300,7 +393,7 @@ export async function innerLoop(
     }
   }
 
-  // 8. Apply mutation
+  // 11. Apply mutation
   let backupPath: string;
   try {
     const result = applyMutation(artifact.path, updatedContent);
@@ -310,7 +403,7 @@ export async function innerLoop(
     return makeCrashResult(genid, artifactId, archive, err);
   }
 
-  // 9. Score the mutated artifact
+  // 12. Score the mutated artifact
   let newScorecard: Scorecard;
   try {
     const mutatedOptions = {
@@ -328,7 +421,7 @@ export async function innerLoop(
     return makeCrashResult(genid, artifactId, archive, err);
   }
 
-  // 10. Compare scores
+  // 13. Compare scores
   const baselineScore = baselineScorecard.total_score;
   const newScore = newScorecard.total_score;
   const maxScore = newScorecard.max_score;
@@ -364,22 +457,49 @@ export async function innerLoop(
     }
   }
 
+  // 14. Cross-validation — check for regressions on other challenges
+  let crossValidationScores: Record<string, number> | undefined;
+  if (config.evolution.cross_validation_count > 0 && newScore > baselineScore && challenges.length > 1) {
+    const cvResults = await crossValidate(
+      updatedContent,
+      artifact.path,
+      challenges.map(c => ({ id: c.id, name: c.name, description: c.description })),
+      config.evolution.cross_validation_count,
+      selectedChallenge?.id ?? null,
+      artifactConfig.scorer.chain,
+      projectRoot,
+      provider,
+    );
+    const hasRegression = detectRegression(cvResults, archive, artifactId, 0.05);
+    if (hasRegression) {
+      // Demote to neutral — the mutation improved current challenge but regressed others
+      status = 'neutral';
+      revertMutation(artifact.path, backupPath);
+      if (gitCtx) abandonExperiment(gitCtx);
+    }
+    // Record cross-validation scores regardless
+    crossValidationScores = {};
+    for (const cv of cvResults) {
+      crossValidationScores[cv.challengeId] = cv.score;
+    }
+  }
+
   // Git safety: always ensure we return to base branch
   if (useGitSafety) {
     returnToBaseBranch(projectRoot);
   }
 
-  // 11. Extract per-criterion checks from scorecard
+  // 15. Extract per-criterion checks from scorecard
   const scorecardChecks = extractScorecardChecks(newScorecard);
 
-  // 12. Log to archive
+  // 16. Log to archive
   const entry: ArchiveEntry = {
     genid,
     artifact: artifactId,
     parent: parent?.genid ?? null,
     score: newScore,
     max_score: maxScore,
-    challenge: null,
+    challenge: selectedChallenge?.id ?? null,
     run_id: null,
     diff,
     mutation_type: mutationType,
@@ -390,10 +510,15 @@ export async function innerLoop(
     automated: false,
     ...(mutationResult.dialogue_trace ? { dialogue_trace: mutationResult.dialogue_trace } : {}),
     ...(scorecardChecks.length > 0 ? { scorecard_checks: scorecardChecks } : {}),
+    ...(crossValidationScores ? { cross_validation_scores: crossValidationScores } : {}),
+    ...(mutationResult.variants && mutationResult.variants.length > 1 ? {
+      beam_variants_count: mutationResult.variants.length,
+      selected_variant_index: mutationResult.dialogue_trace?.selected_variant_index ?? 0,
+    } : {}),
   };
   archive.append(entry);
 
-  // 12. Return result
+  // 16. Return result
   return {
     genid,
     artifact: artifactId,

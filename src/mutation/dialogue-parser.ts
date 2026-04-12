@@ -193,6 +193,33 @@ export function parseGenerateResponse(raw: string): string {
   throw new DialogueParseError('Generate', 'Could not extract updated artifact from response');
 }
 
+export function parseGenerateResponseMulti(raw: string, expectedCount: number): string[] {
+  const variants: string[] = [];
+
+  for (let i = 1; i <= expectedCount; i++) {
+    const startDelimiter = `===VARIANT_${i}===`;
+    const endDelimiter = `===END_VARIANT_${i}===`;
+    const startIdx = raw.indexOf(startDelimiter);
+    const endIdx = raw.indexOf(endDelimiter);
+
+    if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+      const content = raw.slice(startIdx + startDelimiter.length, endIdx).trim();
+      if (content.length > 0) {
+        variants.push(content);
+      }
+    }
+  }
+
+  // If we found fewer than expected, try to parse whatever is there
+  if (variants.length > 0) {
+    return variants;
+  }
+
+  // Fallback: no variants found, try single-artifact parse
+  const single = parseGenerateResponse(raw);
+  return [single];
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 function validateRisk(value: unknown): 'low' | 'medium' | 'high' {

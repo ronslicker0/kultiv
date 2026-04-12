@@ -568,6 +568,49 @@ export async function startDashboard(
     }
   });
 
+  // ── API: Challenges ──────────────────────────────────────────────────
+  app.get('/api/challenges', async (c) => {
+    const configPath = join(absEvoDir, 'config.yaml');
+    if (!existsSync(configPath)) return c.json([]);
+
+    try {
+      const config = loadConfig(configPath);
+      const yaml = await import('js-yaml');
+      const artifactIds = Object.keys(config.artifacts);
+      const allChallenges: Array<{ artifact: string; challenges: unknown[] }> = [];
+
+      for (const id of artifactIds) {
+        const challengesDir = join(absEvoDir, 'challenges', id);
+        if (existsSync(challengesDir)) {
+          try {
+            const files = readdirSync(challengesDir).filter((f: string) => f.endsWith('.yaml') || f.endsWith('.yml'));
+            const challenges = files.map((f: string) => {
+              try {
+                return yaml.default.load(readFileSync(join(challengesDir, f), 'utf-8'));
+              } catch { return null; }
+            }).filter(Boolean);
+            allChallenges.push({ artifact: id, challenges });
+          } catch { /* ignore */ }
+        }
+      }
+      return c.json(allChallenges);
+    } catch { return c.json([]); }
+  });
+
+  // ── API: Feedback ───────────────────────────────────────────────────
+  app.get('/api/feedback/:artifactId', async (c) => {
+    const artifactId = c.req.param('artifactId');
+    const archive = getArchive(absEvoDir);
+
+    try {
+      const { runDeterministicFeedback } = await import('../loops/feedback.js');
+      const result = await runDeterministicFeedback(archive, artifactId);
+      return c.json(result);
+    } catch (err) {
+      return c.json({ error: String(err) }, 500);
+    }
+  });
+
   // ── API: Pause / Resume ─────────────────────────────────────────────
   app.post('/api/pause', (c) => {
     const signalPath = join(absEvoDir, 'pause-signal');

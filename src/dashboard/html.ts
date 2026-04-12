@@ -190,6 +190,11 @@ function DialogueDetail({trace}){
       <span>Input tokens: \${t.total_input_tokens.toLocaleString()}</span>
       <span>Output tokens: \${t.total_output_tokens.toLocaleString()}</span>
     </div>
+    \${t.beam_variants_count > 1 ? html\`
+      <div style="margin-top:8px;padding:8px 12px;background:rgba(168,85,247,.1);border:1px solid rgba(168,85,247,.2);border-radius:6px;font-size:12px">
+        <strong style="color:var(--purple)">Beam Search:</strong> \${t.beam_variants_count} variants generated, variant #\${(t.selected_variant_index ?? 0) + 1} selected
+      </div>
+    \` : ''}
   </div>\`;
 }
 
@@ -215,13 +220,25 @@ function MutationTable({entries,showArtifact}){
       <tr class="clickable \${expanded===e.genid?'expanded':''}" onclick=\${()=>toggle(e.genid)}>
         <td>\${e.genid}</td>
         \${showArtifact?html\`<td>\${e.artifact}</td>\`:null}
-        <td>\${e.mutation_type}</td>
+        <td>\${e.mutation_type}\${e.challenge ? html\`<span class="badge" style="background:rgba(168,85,247,.1);color:var(--purple);margin-left:4px">\${e.challenge}</span>\` : ''}</td>
         <td>\${e.score!==null?\`\${e.score}/\${e.max_score}\`:'—'}</td>
         <td><span class="badge \${e.status}">\${e.status}</span></td>
         <td style="color:var(--text2)">\${fmtDate(e.timestamp)}</td>
       </tr>
       \${expanded===e.genid?html\`<tr><td colspan="\${showArtifact?6:5}" style="padding:0 12px 12px">
         <\${DialogueDetail} trace=\${detail}/>
+        \${detail?.cross_validation_scores?.length > 0 ? html\`
+          <div style="margin-top:8px">
+            <h5 style="font-size:12px;color:var(--purple);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Cross-Validation</h5>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              \${detail.cross_validation_scores.map(cv => html\`
+                <span class="badge \${cv.regressed ? 'regression' : 'success'}" style="font-size:11px">
+                  \${cv.challengeId || cv.challenge_id}: \${cv.score}/\${cv.max_score} \${cv.regressed ? '(regressed)' : ''}
+                </span>
+              \`)}
+            </div>
+          </div>
+        \` : ''}
       </td></tr>\`:null}
     </\${Fragment}>\`)}
   </table>\`;}
@@ -380,10 +397,12 @@ function InsightsPanel(){
 function Overview(){
   const[status,setStatus]=useState(null);
   const[archive,setArchive]=useState([]);
+  const[config,setConfig]=useState(null);
   const load=useCallback(async()=>{
-    const[s,a]=await Promise.all([api('status'),api('archive?limit=50')]);
+    const[s,a,cfg]=await Promise.all([api('status'),api('archive?limit=50'),api('config')]);
     if(!s.error)setStatus(s);
     if(!a.error)setArchive(a);
+    if(!cfg.error)setConfig(cfg);
   },[]);
   useEffect(()=>{load();const t=setInterval(load,10000);return()=>clearInterval(t)},[load]);
 
@@ -406,6 +425,18 @@ function Overview(){
       <div class="card"><div class="label">Success Rate</div><div class="value" style="color:var(--green)">\${status.success_rate}%</div></div>
       <div class="card"><div class="label">Tokens Spent</div><div class="value">\${(status.total_tokens||0).toLocaleString()}</div></div>
     </div>
+    \${config && config.evolution ? html\`
+    <div class="panel mt">
+      <h3 style="font-size:14px;font-weight:600;margin-bottom:12px">Evolution Config</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;font-size:13px">
+        <div><span style="color:var(--text2)">Selection:</span> \${config.evolution.selection?.parent_method ?? 'greedy'}</div>
+        <div><span style="color:var(--text2)">Beam width:</span> \${config.evolution.beam_width ?? 1}</div>
+        <div><span style="color:var(--text2)">Cross-validation:</span> \${config.evolution.cross_validation_count ?? 0}</div>
+        <div><span style="color:var(--text2)">Mutation mode:</span> \${config.evolution.mutation_mode ?? 'single'}</div>
+        <div><span style="color:var(--text2)">Outer loop:</span> \${config.outer_loop?.mode ?? 'single'}</div>
+      </div>
+    </div>
+    \` : ''}
     <\${InsightsPanel}/>
     <div class="row">
       <div class="col"><div class="panel">

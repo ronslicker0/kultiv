@@ -30,6 +30,9 @@ export interface ArchiveEntry {
   automated: boolean;
   dialogue_trace?: DialogueTrace;
   scorecard_checks?: ScorecardCheck[];
+  cross_validation_scores?: Record<string, number>;
+  beam_variants_count?: number;
+  selected_variant_index?: number;
 }
 
 export type ArchiveFilter = Partial<Pick<ArchiveEntry, 'artifact' | 'status' | 'run_id' | 'automated'>>;
@@ -166,6 +169,46 @@ export class Archive {
   getAll(): ReadonlyArray<ArchiveEntry> {
     this.ensureLoaded();
     return [...this.entries];
+  }
+
+  /**
+   * Get all entries for a specific challenge.
+   */
+  getByChallenge(challengeId: string): ArchiveEntry[] {
+    this.ensureLoaded();
+    return this.entries.filter((e) => e.challenge === challengeId);
+  }
+
+  /**
+   * Get aggregated statistics per challenge: count, average score, and last score.
+   */
+  getChallengeStats(): Map<string, { count: number; avgScore: number; lastScore: number }> {
+    this.ensureLoaded();
+
+    const stats = new Map<string, { count: number; avgScore: number; lastScore: number }>();
+
+    const byChallengeId = new Map<string, ArchiveEntry[]>();
+    for (const entry of this.entries) {
+      if (entry.challenge === null || entry.score === null) continue;
+      const existing = byChallengeId.get(entry.challenge);
+      if (existing) {
+        existing.push(entry);
+      } else {
+        byChallengeId.set(entry.challenge, [entry]);
+      }
+    }
+
+    for (const [challengeId, entries] of byChallengeId) {
+      const scores = entries.map((e) => e.score as number);
+      const sum = scores.reduce((a, b) => a + b, 0);
+      stats.set(challengeId, {
+        count: scores.length,
+        avgScore: sum / scores.length,
+        lastScore: scores[scores.length - 1],
+      });
+    }
+
+    return stats;
   }
 
   private ensureLoaded(): void {

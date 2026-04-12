@@ -35,12 +35,15 @@ export class AnthropicProvider implements LLMProvider {
       content: m.content,
     }));
 
-    const response = await this.client.messages.create({
+    // Use streaming to avoid timeout errors on long operations
+    const stream = this.client.messages.stream({
       model: this.model,
       max_tokens: maxTokens,
       temperature,
       messages: anthropicMessages,
     });
+
+    const response = await stream.finalMessage();
 
     // Extract text from content blocks
     const content = response.content

@@ -20,6 +20,7 @@ const ArtifactConfigSchema = z.object({
     chain: z.array(ScorerChainItemSchema).min(1),
   }),
   challenges_dir: z.string().optional(),
+  auto_generate_challenges: z.boolean().default(false),
 });
 
 const LLMConfigSchema = z.object({
@@ -32,12 +33,32 @@ const LLMConfigSchema = z.object({
   base_url: z.string().optional(),
 });
 
+const SelectionConfigSchema = z.object({
+  parent_method: z.enum(['tournament', 'greedy']).default('tournament'),
+  parent_temperature: z.number().positive().default(2.0),
+  challenge_method: z.enum(['curriculum', 'min_score', 'round_robin']).default('curriculum'),
+});
+
 const EvolutionConfigSchema = z.object({
   budget_per_session: z.number().int().positive().default(10),
   feedback_interval: z.number().int().positive().default(3),
   outer_interval: z.number().int().positive().default(10),
   plateau_window: z.number().int().positive().default(5),
-  mutation_mode: z.enum(['single', 'dialogue']).default('single'),
+  mutation_mode: z.enum(['single', 'dialogue']).default('dialogue'),
+  beam_width: z.number().int().min(1).max(10).default(3),
+  cross_validation_count: z.number().int().min(0).max(5).default(2),
+  selection: SelectionConfigSchema.default({}),
+});
+
+const FeedbackConfigSchema = z.object({
+  deterministic_interval: z.number().int().positive().default(3),
+  llm_reflection_interval: z.number().int().positive().default(6),
+  llm_reflection_enabled: z.boolean().default(true),
+});
+
+const OuterLoopConfigSchema = z.object({
+  mode: z.enum(['dialogue', 'single']).default('dialogue'),
+  validation_batch_size: z.number().int().min(1).max(10).default(3),
 });
 
 const AutomationConfigSchema = z.object({
@@ -61,6 +82,8 @@ const EvoConfigSchema = z.object({
   artifacts: z.record(z.string(), ArtifactConfigSchema),
   llm: LLMConfigSchema,
   evolution: EvolutionConfigSchema.default({}),
+  feedback: FeedbackConfigSchema.default({}),
+  outer_loop: OuterLoopConfigSchema.default({}),
   automation: AutomationConfigSchema.default({}),
   dashboard: DashboardConfigSchema.default({}),
   meta_strategy_path: z.string().default('.kultiv/meta-strategy.md'),
@@ -71,7 +94,10 @@ const EvoConfigSchema = z.object({
 export type ScorerChainItem = z.infer<typeof ScorerChainItemSchema>;
 export type ArtifactConfig = z.infer<typeof ArtifactConfigSchema>;
 export type LLMConfig = z.infer<typeof LLMConfigSchema>;
+export type SelectionConfig = z.infer<typeof SelectionConfigSchema>;
 export type EvolutionConfig = z.infer<typeof EvolutionConfigSchema>;
+export type FeedbackConfig = z.infer<typeof FeedbackConfigSchema>;
+export type OuterLoopConfig = z.infer<typeof OuterLoopConfigSchema>;
 export type AutomationConfig = z.infer<typeof AutomationConfigSchema>;
 export type DashboardConfig = z.infer<typeof DashboardConfigSchema>;
 export type EvoConfig = z.infer<typeof EvoConfigSchema>;

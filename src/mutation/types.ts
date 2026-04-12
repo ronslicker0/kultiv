@@ -31,6 +31,38 @@ export interface MutationResult {
   input_tokens: number;
   output_tokens: number;
   dialogue_trace?: DialogueTrace;
+  variants?: string[];
+}
+
+// ── Beam & Cross-Validation Types ──────────────────────────────────────
+
+export interface BeamVariant {
+  content: string;
+  variant_index: number;
+}
+
+export interface CrossValidationResult {
+  challenge_id: string;
+  score: number;
+  max_score: number;
+  regressed: boolean;
+}
+
+// ── Challenge Types ────────────────────────────────────────────────────
+
+export interface Challenge {
+  id: string;
+  name: string;
+  description: string;
+  difficulty: number;
+  scorer_overrides?: Array<{
+    name: string;
+    command?: string;
+    type?: string;
+    rules_file?: string;
+    weight: number;
+  }>;
+  tags?: string[];
 }
 
 // ── Dialogue Mode Types ─────────────────────────────────────────────────
@@ -68,6 +100,8 @@ export interface DialogueTrace {
   rounds_completed: number;
   total_input_tokens: number;
   total_output_tokens: number;
+  beam_variants_count?: number;
+  selected_variant_index?: number;
 }
 
 // ── Failure Context ─────────────────────────────────────────────────────

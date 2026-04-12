@@ -1,6 +1,7 @@
 import type { MutationContext } from './single-call.js';
 import type { ExploreCandidate, SpecifyOutput } from './types.js';
 import type { Scorecard } from '../scoring/chain-runner.js';
+import type { ArchiveEntry } from '../core/archive.js';
 
 // ── Round 1: Explore ────────────────────────────────────────────────────
 
@@ -83,7 +84,11 @@ Respond with a JSON code block:
 
 // ── Round 2: Critique ───────────────────────────────────────────────────
 
-export function buildCritiquePrompt(candidates: ExploreCandidate[]): string {
+export function buildCritiquePrompt(
+  candidates: ExploreCandidate[],
+  scorecard?: Scorecard,
+  archiveHistory?: ArchiveEntry[],
+): string {
   const candidateList = candidates
     .map(
       (c, i) =>
@@ -91,15 +96,33 @@ export function buildCritiquePrompt(candidates: ExploreCandidate[]): string {
     )
     .join('\n\n');
 
-  return `## Task: CRITIQUE
+  // Build optional scorecard context section
+  let scorecardSection = '';
+  if (scorecard) {
+    const evalLines = scorecard.evaluators
+      .map((e) => `  ${e.name}: ${e.score}/${e.max} (weight=${e.weight}, passed=${e.passed})`)
+      .join('\n');
+    scorecardSection = `\n## Current Scorecard (${scorecard.percentage.toFixed(1)}%)\n${evalLines}\n`;
+  }
 
+  // Build optional archive history section
+  let historySection = '';
+  if (archiveHistory && archiveHistory.length > 0) {
+    const historyLines = archiveHistory
+      .map((e) => `  gen=${e.genid} type=${e.mutation_type} status=${e.status} score=${e.score}/${e.max_score}`)
+      .join('\n');
+    historySection = `\n## Recent Archive History (last ${archiveHistory.length})\n${historyLines}\n`;
+  }
+
+  return `## Task: CRITIQUE
+${scorecardSection}${historySection}
 You proposed these candidates in the Explore phase:
 
 ${candidateList}
 
 Now evaluate each candidate against these criteria:
 1. **Regression risk** — Could this change break something that currently works?
-2. **Redundancy** — Does this duplicate a recent mutation that was already tried (check the archive history from the Explore phase)?
+2. **Redundancy** — Does this duplicate a recent mutation that was already tried (check the archive history)?
 3. **Root-cause fit** — Does this address the actual reason an evaluator is failing, or just a symptom?
 4. **Diversity** — Does this avoid type fixation (repeating the same mutation pattern)?
 
@@ -169,8 +192,10 @@ Respond with a JSON code block:
 
 // ── Round 4: Generate ───────────────────────────────────────────────────
 
-export function buildGeneratePrompt(spec: SpecifyOutput, artifact: string): string {
-  return `## Task: GENERATE
+export function buildGeneratePrompt(spec: SpecifyOutput, artifact: string, beamWidth?: number): string {
+  const effectiveBeamWidth = beamWidth && beamWidth > 1 ? beamWidth : 1;
+
+  const basePrompt = `## Task: GENERATE
 
 Apply the following specification to produce the updated artifact.
 
@@ -192,11 +217,30 @@ ${artifact}
 - Output the COMPLETE updated artifact — the entire file, not just the changed part.
 - Respect all integration constraints.
 - CRITICAL SIZE CONSTRAINT: The updated artifact must be within 30% of the original length. If the spec says REPHRASE or SIMPLIFY, the output should be roughly the same size or smaller. Do NOT expand sections significantly — a "rephrase" that doubles a section's length is a rewrite, not a rephrase.
-- PRESERVE STRUCTURE: Keep all existing headings, sections, and formatting intact unless the spec explicitly says to change them. Only modify the targeted section.
+- PRESERVE STRUCTURE: Keep all existing headings, sections, and formatting intact unless the spec explicitly says to change them. Only modify the targeted section.`;
+
+  if (effectiveBeamWidth === 1) {
+    return `${basePrompt}
 
 ===UPDATED_ARTIFACT===
 (paste the COMPLETE updated artifact content here)
 ===END_ARTIFACT===`;
+  }
+
+  // Multi-variant beam mode
+  const variantInstructions = Array.from({ length: effectiveBeamWidth }, (_, i) => {
+    const n = i + 1;
+    return `===VARIANT_${n}===\n(paste COMPLETE variant ${n} here)\n===END_VARIANT_${n}===`;
+  }).join('\n\n');
+
+  return `${basePrompt}
+
+**BEAM MODE: Produce ${effectiveBeamWidth} distinct variants of the updated artifact.**
+Each variant must apply the same specification but explore a DIFFERENT phrasing, structure, or emphasis. The variants should be meaningfully different from each other while all satisfying the spec.
+
+Output each variant using these delimiters:
+
+${variantInstructions}`;
 }
 
 // ── Context Section Builders ────────────────────────────────────────────
