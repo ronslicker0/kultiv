@@ -59,25 +59,43 @@ my-agent: 91/100 (91%)
 
 ## How Kultiv Thinks
 
-1. **Score** your artifact against a chain of tests (compiler, test suite, linter, LLM judge) with per-criterion breakdowns
-2. **Mutate** using a 4-round dialogue engine (Explore → Critique → Specify → Generate) that sees the rubric and knows which criteria are weakest
-3. **Re-score** the mutated version with the same tests
-4. **Keep or revert** -- better score? Keep. Worse? Revert automatically
-5. **Learn** -- after every few experiments, Kultiv revises its own mutation strategy based on what worked
-6. **Report** -- when plateaued, generates improvement reports identifying the weakest criteria and what the next scoring tier requires
+1. **Select parent** -- tournament selection with softmax roulette picks which artifact version to mutate next (not always the best -- exploration matters)
+2. **Pick challenge** -- curriculum-based challenge selection targets the zone of proximal development (challenges the artifact is close to mastering)
+3. **Mutate** -- 4-round dialogue engine (Explore → Critique → Specify → Generate) sees the rubric, per-criterion scores, and production failures
+4. **Beam search** -- generate N variant mutations in parallel, score all of them, keep only the best
+5. **Guard** -- semantic diff verifies the mutation only changed what the spec described (no scope creep)
+6. **Score** -- run the full evaluator chain (compiler, test suite, linter, LLM judge) with per-criterion breakdowns
+7. **Cross-validate** -- score against other challenges to detect overfitting to the current one
+8. **Keep or revert** -- better score without regressions? Keep. Worse or overfitting? Revert automatically
+9. **Learn** -- deterministic feedback detects anti-patterns; LLM reflection identifies what's working and adapts the strategy
+10. **Report** -- when plateaued, generates improvement reports with per-criterion breakdown and next-tier requirements
 
 ## Features
 
-- **4-round dialogue mutations** -- Explore → Critique → Specify → Generate. The mutation LLM sees your rubric and per-criterion scores, so it targets the weakest areas instead of making blind changes
-- **9 mutation types** -- add rules, add examples, simplify, reorder, rephrase, merge, restructure, delete, add negative examples
+### Evolution Engine
+- **4-round dialogue mutations** -- Explore → Critique → Specify → Generate. The mutation LLM sees your rubric, per-criterion scores, and production failures
+- **Beam search** -- generate N variant mutations per round, score all of them, keep the best. Configurable width (default 3)
+- **Tournament selection** -- softmax roulette with diversity enforcement picks parents. Avoids always exploiting the current best
+- **Curriculum challenges** -- challenge YAML files define scoring scenarios. Kultiv picks challenges in the zone of proximal development
+- **Semantic diff guard** -- LLM verifies the mutation only changed what the spec described. Prevents scope creep and hallucinated rewrites
+- **Cross-validation** -- after a mutation improves on one challenge, score against others to detect overfitting. Reverts if regressions found
+
+### Scoring & Feedback
 - **Calibrated scoring** -- graduated rubrics with 4-tier scoring ladders per criterion. Sum-based scoring (not holistic) prevents score inflation
+- **9 mutation types** -- add rules, add examples, simplify, reorder, rephrase, merge, restructure, delete, add negative examples
 - **Pattern guardrails** -- regex rules in `require` or `forbid` mode catch structural regressions instantly, zero LLM tokens
 - **Tests that cost nothing** -- run your existing test suites, linters, and compilers as scorers
-- **Knows when it's stuck** -- detects plateaus, type fixation, overfitting, and bloat. Generates improvement reports identifying the weakest criteria and what the next tier requires
-- **Improves how it improves** -- a second evolution loop rewrites the mutation strategy based on what's actually working
-- **Diagnostic mutations** -- feeds real production failures from `.kultiv/pending/` into the mutation engine so it fixes what actually broke, not what it guesses might be wrong
-- **Agent scanning** -- `kultiv scan` analyzes any prompt for purpose, structure, and improvement opportunities (trim, expand, combine, split, add examples)
-- **Insights dashboard** -- built-in web dashboard at localhost:4200 shows scores, per-criterion breakdowns, pending failures, scan analyses, and mutation history. Includes a built-in documentation panel accessible via the Docs button in the header
+- **Deterministic feedback** -- anti-pattern detection (plateau, type fixation, bloat) runs every N iterations at zero token cost
+- **LLM reflection** -- periodic meta-analysis of experiment history identifies what's working and suggests strategy changes
+
+### Self-Improvement
+- **Knows when it's stuck** -- detects plateaus and generates improvement reports with per-criterion breakdown and next-tier requirements
+- **Improves how it improves** -- outer loop rewrites the mutation strategy. Dialogue mode uses 3-round revision with mini-batch validation
+- **Diagnostic mutations** -- feeds real production failures from `.kultiv/pending/` into the mutation engine
+
+### Operations
+- **Agent scanning** -- `kultiv scan` analyzes any prompt for purpose, structure, and improvement opportunities
+- **Insights dashboard** -- built-in web dashboard shows scores, beam search results, challenge badges, cross-validation, and mutation history
 - **Runs while you sleep** -- hook into Claude Code post-session events or schedule via cron/Task Scheduler
 - **Works with Anthropic, OpenAI, Ollama, Claude Code** -- bring your own provider and model
 
@@ -168,6 +186,23 @@ evolution:
   outer_interval: 10                 # revise mutation strategy every 10 runs
   plateau_window: 5                  # detect plateaus over 5-run windows
   mutation_mode: dialogue            # dialogue (4-round) or single (1-shot)
+  beam_width: 3                      # generate N variants per mutation, keep best
+  cross_validation_count: 2          # score against N other challenges after success
+  selection:
+    parent_method: tournament        # tournament (explore) or greedy (exploit)
+    parent_temperature: 1.2          # higher = more exploration (softmax temp)
+    challenge_method: curriculum     # curriculum | min_score | round_robin
+
+# Feedback loops
+feedback:
+  deterministic_interval: 3          # anti-pattern check every N iterations
+  llm_reflection_interval: 10        # LLM meta-analysis every N iterations
+  llm_reflection_enabled: true       # enable/disable LLM reflection
+
+# Outer loop (meta-strategy revision)
+outer_loop:
+  mode: dialogue                     # dialogue (3-round) or single (1-shot)
+  validation_batch_size: 2           # score N artifacts to validate strategy changes
 
 # Unattended evolution
 automation:
@@ -360,15 +395,18 @@ kultiv init --preset nextjs
 
 ```
 src/
-  core/           config, archive (JSONL + per-criterion checks), artifact reader, trace store
-  scoring/        chain runner, command scorer, pattern scorer (require/forbid), LLM judge (sum-based)
-  mutation/       4-round dialogue engine, single-call fallback, agent scanner, apply/revert
+  core/           config (Zod-validated), archive (JSONL + per-criterion checks), artifact reader, trace store
+  scoring/        chain runner, command scorer, pattern scorer (require/forbid), LLM judge, cross-validator
+  mutation/       4-round dialogue engine (beam search), single-call fallback, agent scanner, apply/revert
+  selection/      tournament parent selection (softmax + diversity), curriculum challenge selection
+  challenges/     challenge YAML loader, LLM-powered challenge generator
+  guards/         semantic diff guard (LLM-verified mutation scope)
   detection/      plateau + anti-pattern heuristics (zero LLM tokens)
-  loops/          inner loop (mutate/score), outer loop (meta-strategy), improvement reports
+  loops/          inner loop (select→mutate→guard→score→validate), outer loop (dialogue mode), feedback
   automation/     cron daemon, hook trigger, pending queue, lockfile
-  llm/            Anthropic, OpenAI, Ollama, Claude Code adapters
+  llm/            Anthropic (streaming), OpenAI, Ollama, Claude Code adapters
   safety/         git branch-per-experiment, auto-merge, auto-abandon
-  dashboard/      Preact SPA with insights panel, score charts, mutation history, built-in docs
+  dashboard/      Preact SPA with beam search display, challenge badges, cross-validation, built-in docs
 
 bin/
   kultiv.ts       CLI entry point (Commander.js)
@@ -381,25 +419,40 @@ templates/
 ### Data flow
 
 ```
-Artifact  -->  Score (evaluator chain)  -->  Baseline + per-criterion breakdown
-    |                                              |
-    v                                              v
-4-round dialogue (sees rubric + weak criteria + failures + scan)  -->  Targeted mutation
-    |          ^                    ^
-    |          |                    |
-    |    .kultiv/pending/     .kultiv/scans/
-    |    (real failures)      (agent analysis)
-    v
-Apply tweak  -->  Re-score  -->  Compare
-    |                               |
-    v                               v
- Keep (better)              Revert (worse)
-    |
-    v
- Archive entry  -->  Anti-pattern check  -->  Strategy revision
-                                                    |
-                                                    v
-                                         Improvement report (if plateaued)
+Tournament Select Parent  -->  Curriculum Select Challenge
+         |                              |
+         v                              v
+4-round dialogue (rubric + weak criteria + failures + scan)
+         |
+         v
+Beam Search: generate N variants  -->  Score all  -->  Pick best
+         |
+         v
+Semantic Diff Guard (verify scope)  -->  FAIL? → revert
+         |
+         v
+Size Guard (±50% limit)  -->  FAIL? → revert
+         |
+         v
+Apply best variant  -->  Re-score  -->  Compare to baseline
+         |                                      |
+         v                                      v
+Cross-validate (other challenges)        WORSE? → revert
+         |
+         v
+REGRESSED on others? → demote to neutral & revert
+         |
+         v
+Archive entry  -->  Deterministic feedback  -->  LLM reflection
+                            |                          |
+                            v                          v
+                    Anti-pattern alerts         Strategy insights
+                            |
+                            v
+                    Outer loop (dialogue mode + mini-batch validation)
+                            |
+                            v
+                    Improvement report (if plateaued)
 ```
 
 ## Contributing
