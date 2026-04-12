@@ -611,6 +611,53 @@ export async function startDashboard(
     }
   });
 
+  // ── API: Generate Challenges ────────────────────────────────────────
+  app.post('/api/challenges/generate', async (c) => {
+    const body = await c.req.json<{ artifact: string }>();
+    if (!body.artifact) return c.json({ error: 'artifact is required' }, 400);
+
+    const configPath = join(absEvoDir, 'config.yaml');
+    if (!existsSync(configPath)) return c.json({ error: 'Not initialized' }, 404);
+
+    try {
+      const config = loadConfig(configPath);
+      const artifactConfig = config.artifacts[body.artifact];
+      if (!artifactConfig) return c.json({ error: `Artifact "${body.artifact}" not found` }, 404);
+
+      const { createProvider } = await import('../llm/factory.js');
+      const { loadArtifact } = await import('../core/artifact.js');
+      const { generateChallenges, saveChallenges } = await import('../challenges/generator.js');
+      const { loadChallenges } = await import('../challenges/loader.js');
+      const { loadScanAnalysis } = await import('../mutation/scan.js');
+
+      const provider = createProvider(config.llm);
+      const artifact = loadArtifact(body.artifact, artifactConfig);
+      const challengesDir = join(absEvoDir, 'challenges', body.artifact);
+
+      // Load existing
+      let existing: Array<{ id: string; name: string; description: string; difficulty: number; tags?: string[] }> = [];
+      try { existing = loadChallenges(challengesDir); } catch { /* none */ }
+
+      // Load weak criteria from archive
+      const archive = getArchive(absEvoDir);
+      const entries = archive.getAll().filter(e => e.artifact === body.artifact && e.score !== null);
+      const latest = entries.length > 0 ? entries[entries.length - 1] : null;
+      const weakCriteria = (latest?.scorecard_checks ?? [])
+        .filter(c => c.max > 0 && c.score / c.max < 0.75);
+
+      const scanAnalysis = loadScanAnalysis(absEvoDir, body.artifact);
+
+      const newChallenges = await generateChallenges(
+        artifact.content, scanAnalysis, weakCriteria, existing, provider,
+      );
+      saveChallenges(challengesDir, newChallenges);
+
+      return c.json({ success: true, challenges: newChallenges });
+    } catch (err) {
+      return c.json({ error: String(err) }, 500);
+    }
+  });
+
   // ── API: Pause / Resume ─────────────────────────────────────────────
   app.post('/api/pause', (c) => {
     const signalPath = join(absEvoDir, 'pause-signal');

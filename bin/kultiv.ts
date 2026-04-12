@@ -314,6 +314,95 @@ function printScanAnalysis(analysis: { purpose: string; domain: string; sections
   }
 }
 
+// ── challenges ──────────────────────────────────────────────────────────
+
+program
+  .command('challenges')
+  .description('Manage evaluation challenges for artifacts')
+  .option('-a, --artifact <id>', 'specific artifact (required for generate)')
+  .option('--generate', 'auto-generate challenges targeting weak criteria')
+  .option('--list', 'list existing challenges')
+  .action(async (opts, cmd) => {
+    const configPath = resolveConfigPath(cmd.optsWithGlobals());
+    const config = loadConfig(configPath);
+    const kultivDir = resolveKultivDir();
+
+    const artifactIds = opts.artifact
+      ? [opts.artifact]
+      : Object.keys(config.artifacts);
+
+    if (opts.generate) {
+      const { generateChallenges, saveChallenges } = await import('../src/challenges/generator.js');
+      const { loadChallenges } = await import('../src/challenges/loader.js');
+      const { loadScanAnalysis } = await import('../src/mutation/scan.js');
+      const provider = createProvider(config.llm);
+
+      for (const id of artifactIds) {
+        const artifactConfig = config.artifacts[id];
+        if (!artifactConfig) {
+          console.error(red(`Artifact "${id}" not found in config`));
+          continue;
+        }
+
+        const artifact = loadArtifact(id, artifactConfig);
+        const challengesDir = resolve(kultivDir, 'challenges', id);
+
+        // Load existing challenges
+        let existing: Array<{ id: string; name: string; description: string; difficulty: number; tags?: string[] }> = [];
+        try { existing = loadChallenges(challengesDir); } catch { /* none yet */ }
+
+        // Load weak criteria from archive
+        const archive = new (await import('../src/core/archive.js')).Archive(resolve(kultivDir, 'archive.jsonl'));
+        const entries = archive.getByArtifact(id);
+        const scored = entries.filter(e => e.score !== null);
+        const latest = scored.length > 0 ? scored[scored.length - 1] : null;
+        const weakCriteria = (latest?.scorecard_checks ?? [])
+          .filter(c => c.max > 0 && c.score / c.max < 0.75);
+
+        // Load scan analysis if available
+        const scanAnalysis = loadScanAnalysis(kultivDir, id);
+
+        console.log(`\nGenerating challenges for ${bold(id)}...`);
+        if (weakCriteria.length > 0) {
+          console.log(dim(`  Targeting weak criteria: ${weakCriteria.map(c => `${c.name} (${Math.round(c.score / c.max * 100)}%)`).join(', ')}`));
+        }
+
+        try {
+          const newChallenges = await generateChallenges(
+            artifact.content, scanAnalysis, weakCriteria, existing, provider,
+          );
+          saveChallenges(challengesDir, newChallenges);
+          console.log(green(`  Generated ${newChallenges.length} challenges:`));
+          for (const c of newChallenges) {
+            console.log(`    ${bold(c.name)} (difficulty: ${c.difficulty}/10) — ${c.description}`);
+          }
+          console.log(dim(`  Saved to .kultiv/challenges/${id}/`));
+        } catch (err) {
+          console.error(red(`  Error generating challenges: ${String(err)}`));
+        }
+      }
+    } else {
+      // List mode (default)
+      const { loadChallenges } = await import('../src/challenges/loader.js');
+
+      for (const id of artifactIds) {
+        const challengesDir = resolve(kultivDir, 'challenges', id);
+        let challenges: Array<{ id: string; name: string; description: string; difficulty: number; tags?: string[] }> = [];
+        try { challenges = loadChallenges(challengesDir); } catch { /* none */ }
+
+        console.log(`\n${bold(id)}: ${challenges.length} challenge${challenges.length !== 1 ? 's' : ''}`);
+        if (challenges.length === 0) {
+          console.log(dim(`  No challenges yet. Run: kultiv challenges --generate --artifact ${id}`));
+        }
+        for (const c of challenges) {
+          const tags = c.tags?.length ? ` [${c.tags.join(', ')}]` : '';
+          console.log(`  ${c.name} (difficulty: ${c.difficulty}/10)${tags}`);
+          console.log(dim(`    ${c.description}`));
+        }
+      }
+    }
+  });
+
 // ── run ─────────────────────────────────────────────────────────────────
 
 program
